@@ -929,78 +929,215 @@ def _render_day_all_forums(grouped, the_date: str):
 
     return "\n".join(lines).rstrip()
 
+# ---- Forum filtering / rendering helpers ----
+
+DEFAULT_LOG_LOOKBACK_DAYS = int(os.getenv("LOG_LOOKBACK_DAYS", "14"))
+DEFAULT_FORUM_LIMIT = int(os.getenv("LOGS_FORUM_DEFAULT_LIMIT", "100"))
+
+def _normalize_forum_name(s: str) -> str:
+    if not s:
+        return ""
+    s = s.strip().lower()
+    s = s.replace("_", "-").replace(" ", "-")
+    # collapse duplicate hyphens
+    s = re.sub(r"-{2,}", "-", s)
+    return s
+
+def _entries_for_forum(entries: list, forum_query: str):
+    """
+    Return (filtered_entries, canonical_forum_name or forum_query)
+    Matches exact normalized name first; otherwise substring match on normalized names.
+    """
+    qn = _normalize_forum_name(forum_query)
+    if not qn:
+        return [], forum_query
+
+    # Build map: forum_name -> [entries...]
+    by_forum = {}
+    for e in entries:
+        f = e.get("forum") or ""
+        by_forum.setdefault(f, []).append(e)
+
+    # Score forums for best match
+    scored = []  # (score, forum_name)
+    for forum_name in by_forum.keys():
+        fn = _normalize_forum_name(forum_name)
+        score = 0
+        if fn == qn:
+            score = 3
+        elif fn.startswith(qn):
+            score = 2
+        elif qn in fn:
+            score = 1
+        if score:
+            scored.append((score, forum_name))
+
+    if not scored:
+        return [], forum_query
+
+    # Pick best score, tie-break by shorter name
+    best_score = max(s for s, _ in scored)
+    candidates = [name for s, name in scored if s == best_score]
+    candidates.sort(key=len)
+    chosen = candidates[0]
+
+    return by_forum.get(chosen, []), chosen
+
+def _render_forum(entries: list, forum_query: str, limit: int = DEFAULT_FORUM_LIMIT, only_date: str | None = None) -> str:
+    """
+    entries: list from _iter_log_entries (each has dt, forum, username, message)
+    forum_query: name or partial (e.g., 'bills-panthers')
+    limit: last N messages across the lookback window
+    only_date: optional 'YYYY-MM-DD' to restrict to that day (AZ time)
+    """
+    tz_az = pytz.timezone('US/Arizona')
+
+    # Filter to forum
+    f_entries, canonical = _entries_for_forum(entries, forum_query)
+    if not f_entries:
+        return f"No messages found for forum '{forum_query}' in the last {DEFAULT_LOG_LOOKBACK_DAYS} day(s)."
+
+    # Optional date filter
+    if only_date:
+        def same_day(e):
+            if not e.get("dt"): return False
+            return e["dt"].astimezone(tz_az).strftime("%Y-%m-%d") == only_date
+        f_entries = [e for e in f_entries if same_day(e)]
+
+        if not f_entries:
+            return f"No messages found for **{canonical}** on {only_date}."
+
+    # Sort by time, take the last `limit`
+    f_entries.sort(key=lambda e: e.get("dt") or datetime.min.replace(tzinfo=tz_az))
+    if limit and limit > 0:
+        f_entries = f_entries[-limit:]
+
+    # Group by date for nice headings
+    by_date = defaultdict(list)
+    for e in f_entries:
+        dkey = e["dt"].astimezone(tz_az).date().strftime("%Y-%m-%d (%a)") if e.get("dt") else "Unknown Date"
+        by_date[dkey].append(e)
+
+    # Build output
+    lines = [f"__**Forum:**__ **{canonical}** — {len(f_entries)} message(s)"]
+    if only_date:
+        lines[0] += f" on {only_date}"
+    lines.append("")  # blank
+
+    for dkey in sorted(by_date.keys()):
+        lines.append(f"**{dkey}**")
+        for e in by_date[dkey]:
+            t = e["dt"].astimezone(tz_az).strftime("%I:%M %p").lstrip("0") if e.get("dt") else "??:??"
+            user = e.get("username", "")
+            msg = _sanitize_message((e.get("message") or "").strip()) or "(no content)"
+            lines.append(f"- **{t}** — {user}: {msg}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
 @bot.command(name="logs")
 async def logs_cmd(ctx, *, rest: str = ""):
     """
-    View logs for a single date (required).
-    Defaults to DM; use 'here' to reply in-channel, or DM-fallback if DM disabled.
+    View logs by date or by forum.
 
-    Examples:
-      !logs date=2025-09-24
-      !logs date=2025-09-24 here
+    Usage:
+      • !logs date=YYYY-MM-DD [here]
+      • !logs forum=bills-panthers [limit=100] [date=YYYY-MM-DD] [here]
+      • !logs bills-panthers            # shorthand for forum=
+      • !logs bills-panthers here
+      • !logs forum="bills panthers"    # spaces ok if quoted
+
+    Notes:
+      - Replies by DM unless you add 'here'.
+      - Looks back DEFAULT_LOG_LOOKBACK_DAYS across bot.log files.
+      - Limit defaults to DEFAULT_FORUM_LIMIT (env overridable).
     """
     author = ctx.author
     text = (rest or "").strip()
 
-    # --- parse flags ---
+    # --- parse 'here' flag first ---
     want_here = bool(re.search(r'(^|\s)here($|\s)', text, flags=re.IGNORECASE))
     text = re.sub(r'(^|\s)here($|\s)', ' ', text, flags=re.IGNORECASE).strip()
 
-    m_date = re.search(r'date\s*=\s*(\d{4}-\d{2}-\d{2})', text, flags=re.IGNORECASE)
-    if not m_date:
-        usage = "Usage: `!logs date=YYYY-MM-DD` (optionally add `here`)"
-        if ctx.guild:
-            await ctx.reply(usage)
-        else:
-            try: await author.send(usage)
-            except: pass
-        return
-    only_date = m_date.group(1)
+    # --- parse args ---
+    m_date   = re.search(r'date\s*=\s*(\d{4}-\d{2}-\d{2})', text, flags=re.IGNORECASE)
+    m_forum  = re.search(r'forum\s*=\s*("?)(.+?)\1($|\s)', text, flags=re.IGNORECASE)  # supports forum="bills panthers"
+    m_limit  = re.search(r'limit\s*=\s*(\d{1,4})', text, flags=re.IGNORECASE)
 
-    # --- auth ---
+    only_date = m_date.group(1) if m_date else None
+    limit = int(m_limit.group(1)) if m_limit else DEFAULT_FORUM_LIMIT
+
+    forum_query = None
+    if m_forum:
+        forum_query = m_forum.group(2).strip()
+    else:
+        # if user typed a bare token and NOT a pure date usage, treat it as forum shorthand
+        # (e.g., "!logs bills-panthers")
+        if text and not re.search(r'\bdate\s*=', text, flags=re.IGNORECASE):
+            forum_query = text.strip()
+
+    # --- auth check for all logs ---
     if not _is_authorized(author):
-        try: await author.send("Sorry, you’re not authorized to use the log reader.")
+        try:
+            await author.send("Sorry, you’re not authorized to use the log reader.")
         except:
-            if ctx.guild: await ctx.reply("Sorry, you’re not authorized to use the log reader.")
+            if ctx.guild:
+                await ctx.reply("Sorry, you’re not authorized to use the log reader.")
         return
 
-    # --- acknowledge if in guild and not forcing here ---
+    # --- acknowledge if in-guild and not forcing 'here' ---
     if ctx.guild and not want_here:
-        try: await ctx.reply("I’m sending the log info to your DMs…")
-        except: pass
+        try:
+            await ctx.reply("I’m sending the log info to your DMs…")
+        except:
+            pass
 
-    # --- gather data ---
-    # We can read a modest window (e.g., last 14 days) then filter to the exact date.
-    raw_lines = _read_recent_log_lines(14)
+    # --- read logs once ---
+    raw_lines = _read_recent_log_lines(DEFAULT_LOG_LOOKBACK_DAYS)
     entries = list(_iter_log_entries(raw_lines))
 
-    # Keep only entries that match the exact calendar date in AZ time
-    tz_az = pytz.timezone('US/Arizona')
-    def same_calendar_date(e, ymd):
-        if not e.get("dt"): return False
-        d = e["dt"].astimezone(tz_az).date()
-        return d.strftime("%Y-%m-%d") == ymd
+    chunks = []
 
-    entries = [e for e in entries if same_calendar_date(e, only_date)]
-    grouped = _group_entries(entries)  # builds "YYYY-MM-DD (Dow)" -> forum -> entries, already time-sorted
+    if forum_query:
+        # Forum mode
+        header = f"**bot.log — forum: {forum_query}**"
+        if only_date:
+            header += f" — {only_date}"
+        body = _render_forum(entries, forum_query=forum_query, limit=limit, only_date=only_date)
+        chunks = [header] + split_message(body)
+    else:
+        # Date mode (original behavior)
+        if not only_date:
+            usage = "Usage:\n  `!logs date=YYYY-MM-DD`\nOR\n  `!logs forum=NAME [limit=N] [date=YYYY-MM-DD]`"
+            try:
+                if ctx.guild and not want_here:
+                    await author.send(usage)
+                else:
+                    await ctx.reply(usage)
+            except:
+                pass
+            return
 
-    # --- build payload for ALL forums that day (excluding Direct Message) ---
-    header = f"**bot.log — {only_date} — all forums**"
-    body = _render_day_all_forums(grouped, the_date=only_date)
-    chunks = [header] + split_message(body)
+        grouped = _group_entries([e for e in entries if e.get("dt")])
+        header = f"**bot.log — {only_date} — all forums**"
+        body = _render_day_all_forums(grouped, the_date=only_date)
+        chunks = [header] + split_message(body)
 
     # --- deliver (DM first unless 'here') ---
     delivered = False
     if not want_here:
         try:
-            for c in chunks: await author.send(c)
+            for c in chunks:
+                await author.send(c)
             delivered = True
         except Exception as dm_err:
             logger.warning(f"!logs DM failed; falling back to channel: {dm_err}")
 
     if not delivered:
         try:
-            for c in chunks: await ctx.reply(c)
+            for c in chunks:
+                await ctx.reply(c)
             if not want_here:
                 await ctx.reply("*(Heads-up: I couldn’t DM you. Check Privacy Settings → Allow DMs from server members.)*")
         except Exception as ch_err:

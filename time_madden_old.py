@@ -19,6 +19,10 @@ import sys
 import asyncio
 import logging
 
+from nextcord import File, AllowedMentions
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+import qrcode
+
 from collections import defaultdict, OrderedDict
 import glob
 
@@ -75,6 +79,49 @@ GG_CATEGORY_ID = int(os.getenv("GG_CATEGORY_ID", "0") or 0)  # category that hol
 GG_ALERT_CHANNEL_ID = int(os.getenv("GG_ALERT_CHANNEL_ID", "0") or 0)  # where the bot will post the alert
 GG_ALERT_MENTION_USER_ID = int(os.getenv("GG_ALERT_MENTION_USER_ID", "0") or 0)  # who to @mention in the alert
 
+GAME_STREAMS_FORUM_ID = int(os.getenv("GAME_STREAMS_FORUM_ID", "0") or 0)
+LOGOS_DIR = os.getenv("LOGOS_DIR", "./static/logos")
+FLYER_OUT_DIR = os.getenv("FLYER_OUT_DIR", "./static/flyers")
+EVERYONE_MENTIONS = AllowedMentions(everyone=True, users=False, roles=False, replied_user=False)
+
+TEAM_COLORS = {
+    "CARDINALS":   ("#97233F", "#000000"),
+    "FALCONS":     ("#A71930", "#000000"),
+    "RAVENS":      ("#241773", "#9E7C0C"),
+    "BILLS":       ("#00338D", "#C60C30"),
+    "PANTHERS":    ("#0085CA", "#BFC0BF"),
+    "BEARS":       ("#0B162A", "#C83803"),
+    "BENGALS":     ("#FB4F14", "#000000"),
+    "BROWNS":      ("#311D00", "#FF3C00"),
+    "COWBOYS":     ("#041E42", "#7F9695"),
+    "BRONCOS":     ("#002244", "#FB4F14"),
+    "LIONS":       ("#0076B6", "#B0B7BC"),
+    "PACKERS":     ("#203731", "#FFB612"),
+    "TEXANS":      ("#03202F", "#A71930"),
+    "COLTS":       ("#003A70", "#A2AAAD"),
+    "JAGUARS":     ("#006778", "#101820"),
+    "CHIEFS":      ("#E31837", "#FFB81C"),
+    "RAIDERS":     ("#000000", "#A5ACAF"),
+    "CHARGERS":    ("#0080C6", "#FFC20E"),
+    "RAMS":        ("#003594", "#FFA300"),
+    "DOLPHINS":    ("#008E97", "#F26A24"),
+    "VIKINGS":     ("#4F2683", "#FFC62F"),
+    "PATRIOTS":    ("#002244", "#C60C30"),
+    "SAINTS":      ("#D3BC8D", "#101820"),
+    "GIANTS":      ("#0B2265", "#A71930"),
+    "JETS":        ("#125740", "#FFFFFF"),
+    "EAGLES":      ("#004C54", "#A5ACAF"),
+    "STEELERS":    ("#101820", "#FFB612"),
+    "49ERS":       ("#AA0000", "#B3995D"),
+    "SEAHAWKS":    ("#002244", "#69BE28"),
+    "BUCCANEERS":  ("#D50A0A", "#34302B"),
+    "TITANS":      ("#0C2340", "#4B92DB"),
+    "COMMANDERS":  ("#5A1414", "#FFB612"),
+}
+
+FLYER_REGISTRY = "data/flyers.json"  # de-dupe store
+os.makedirs(os.path.dirname(FLYER_OUT_DIR), exist_ok=True)
+
 # Add handlers to the logger
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
@@ -105,6 +152,316 @@ intents.members = True
 intents.dm_messages = True  # Enable direct message handling
 intents.message_content = True   # Enable content reading for messages
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+
+# Link finder + nickname/team parsing (helpers)
+LINK_RE = re.compile(
+    r"(https?://(?:www\.)?(?:twitch\.tv/[A-Za-z0-9_/-]+|youtu\.be/[^\s>]+|youtube\.com/[^\s>]+))",
+    re.IGNORECASE
+)
+
+TITLE_RE = re.compile(
+    r"(?:W|Week)\s*(\d+).*?\b([A-Z0-9][A-Z0-9 ]+?)\b\s+vs\s+\b([A-Z0-9][A-Z0-9 ]+?)\b",
+    re.IGNORECASE
+)
+
+def find_stream_link(text: str) -> str | None:
+    if not text: return None
+    m = LINK_RE.search(text)
+    return m.group(1) if m else None
+
+def canonical_team(s: str) -> str:
+    s = (s or "").upper().strip()
+    s = re.sub(r"[^A-Z ]+", "", s)  # remove punctuation
+    # simple alias examples
+    aliases = {"DAL":"COWBOYS","DALLAS":"COWBOYS","MIN":"VIKINGS","MINNESOTA":"VIKINGS","NYG":"GIANTS","GIANTS":"GIANTS"}
+    return aliases.get(s, s)
+
+def extract_team_from_nick(nick: str) -> str | None:
+    if not nick:
+        return None
+    m = re.match(r"^([A-Z0-9][A-Z0-9 ]+)\b", nick.strip())
+    return canonical_team(m.group(1)) if m else None
+
+def parse_title_for_week_and_teams(title: str):
+    m = TITLE_RE.search(title or "")
+    if not m: return None, None, None
+    week = int(m.group(1))
+    t1 = canonical_team(m.group(2))
+    t2 = canonical_team(m.group(3))
+    return week, t1, t2
+
+def sorted_pair(a: str, b: str) -> tuple[str, str]:
+    return tuple(sorted([a, b]))
+
+
+# Tiny JSON registry (prevents duplicates)
+def _load_registry():
+    try:
+        with open(FLYER_REGISTRY, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+def _save_registry(d: dict):
+    os.makedirs(os.path.dirname(FLYER_REGISTRY), exist_ok=True)
+    tmp = FLYER_REGISTRY + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2)
+    os.replace(tmp, FLYER_REGISTRY)
+
+def flyer_key(week: int, team_a: str, team_b: str) -> str:
+    a, b = sorted_pair(team_a, team_b)
+    return f"week:{week}:{a}:{b}"
+
+def registry_has(week: int, t1: str, t2: str) -> bool:
+    reg = _load_registry()
+    return flyer_key(week, t1, t2) in reg
+
+def registry_put(week: int, t1: str, t2: str, record: dict):
+    reg = _load_registry()
+    reg[flyer_key(week, t1, t2)] = record
+    _save_registry(reg)
+
+
+# Flyer generator (logos inside badges)
+def _font(size: int, bold=False):
+    try:
+        path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+        return ImageFont.truetype(path, size=size)
+    except Exception:
+        return ImageFont.load_default()
+
+FONT_HDR = _font(86, bold=True)
+FONT_SUB = _font(48, bold=True)
+FONT_BODY= _font(32)
+
+def _draw_header(draw, canvas, week: int):
+    bar = Image.new("RGBA", (canvas.width, 110), (0,0,0,140))
+    canvas.alpha_composite(bar, (0,0))
+    txt = f"WURD • WEEK {week}"
+    tw, th = draw.textbbox((0,0), txt, font=FONT_HDR)[2:]
+    draw.text(((canvas.width - tw)//2, 55 - th//2), txt, fill="white", font=FONT_HDR)
+
+def _gradient_bg(left_color: str, right_color: str, W=1280, H=720):
+    def to_rgb(h): h=h.lstrip("#"); return tuple(int(h[i:i+2],16) for i in (0,2,4))
+    c1 = to_rgb(left_color); c2 = to_rgb(right_color)
+    im = Image.new("RGB", (W,H), "black").convert("RGBA")
+    dr = ImageDraw.Draw(im)
+    for x in range(W):
+        t = x/(W-1)
+        r = int(c1[0]*(1-t)+c2[0]*t); g = int(c1[1]*(1-t)+c2[1]*t); b = int(c1[2]*(1-t)+c2[2]*t)
+        dr.line([(x,0),(x,H)], fill=(r,g,b))
+    im = Image.alpha_composite(im, Image.new("RGBA",(W,H),(0,0,0,150)))  # darken
+    return im
+
+def _badge_with_logo(team: str, logo_path: str, size=260):
+    prim, sec = TEAM_COLORS.get(team, ("#333333","#999999"))
+    badge = Image.new("RGBA", (size, size), (0,0,0,0))
+    bd = ImageDraw.Draw(badge)
+    bd.ellipse([8,8,size-8,size-8], fill=prim, outline=sec, width=8)
+    try:
+        lg = Image.open(logo_path).convert("RGBA")
+        max_side = size - 50
+
+        try:
+            RESAMPLE = Image.Resampling.LANCZOS  # This may not exist on raspberry pi
+        except AttributeError:
+            RESAMPLE = Image.ANTIALIAS
+        # ...
+        lg.thumbnail((max_side, max_side), RESAMPLE)
+
+        badge.alpha_composite(lg, ((size-lg.width)//2, (size-lg.height)//2))
+    except Exception:
+        pass
+    return badge
+
+def _logo_path_for(team: str) -> str | None:
+    candidates = [
+        os.path.join(LOGOS_DIR, f"{team}.png"),
+        os.path.join(LOGOS_DIR, f"{team.title()}.png"),
+        os.path.join(LOGOS_DIR, f"{team.capitalize()}.png"),
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
+
+def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str | None) -> str:
+    W,H = 1280,720
+    prim1, _ = TEAM_COLORS.get(team1, ("#333333","#777777"))
+    prim2, _ = TEAM_COLORS.get(team2, ("#333333","#777777"))
+    canvas = _gradient_bg(prim1, prim2, W, H)
+    draw = ImageDraw.Draw(canvas)
+
+    _draw_header(draw, canvas, week)
+
+    # badges + logos
+    lcx, rcx, cy = W//2 - 260, W//2 + 260, H//2 - 10
+    logo1 = _logo_path_for(team1)
+    logo2 = _logo_path_for(team2)
+    if not logo1 or not logo2:
+        raise FileNotFoundError("Missing logo PNG(s) in LOGOS_DIR")
+    b1 = _badge_with_logo(team1, logo1)
+    b2 = _badge_with_logo(team2, logo2)
+    canvas.alpha_composite(b1, (lcx - b1.width//2, cy - b1.height//2))
+    canvas.alpha_composite(b2, (rcx - b2.width//2, cy - b2.height//2))
+
+    # VS
+    vs = "VS"; tw, th = draw.textbbox((0,0), vs, font=FONT_HDR)[2:]
+    draw.text((W//2 - tw//2, cy - th//2), vs, fill="white", font=FONT_HDR)
+
+    # team labels
+    draw.text((lcx - 120, cy + 160), team1, font=FONT_SUB, fill="white")
+    draw.text((rcx - 110, cy + 160), team2, font=FONT_SUB, fill="white")
+
+    # bottom info
+    y = 560
+    canvas.alpha_composite(Image.new("RGBA",(W,H-y),(0,0,0,120)), (0,y))
+    draw.text((60, y+20), f"Streamer: {streamer}", font=FONT_BODY, fill="white")
+    link_text = f"Live: {link}" if link else "Live: (link pending)"
+    draw.text((60, y+64), link_text, font=FONT_BODY, fill="white")
+    if link:
+        qr = qrcode.make(link).resize((150,150))
+        canvas.paste(qr, (W-60-150, y+2))
+
+    # save
+    out_dir = os.path.join(FLYER_OUT_DIR, f"week_{week}")
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"{team1}_vs_{team2}.png")
+    canvas.convert("RGB").save(path, "PNG")
+    return path
+
+
+# Posting helper with @everyone (and pin)
+def _caption(week: int, t1: str, t2: str, streamer: str, link: str | None) -> str:
+    link_line = f"Live: {link}" if link else "Live: (link pending)"
+    return (
+        "@everyone\n"
+        f"**WURD • WEEK {week}**\n"
+        f"{t1} vs {t2}\n"
+        f"Streamer: {streamer}\n"
+        f"{link_line}"
+    )
+
+async def post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer, link):
+    perms = thread.permissions_for(thread.guild.me)
+    if not perms.mention_everyone:
+        msg = await thread.send(
+            content=("**Heads-up:** I don’t have `Mention Everyone` permission here.\n\n"
+                     + _caption(week,t1,t2,streamer,link).replace("@everyone\n","")),
+            file=File(flyer_path),
+            allowed_mentions=AllowedMentions.none()
+        )
+        try: await msg.pin()
+        except: pass
+        return msg
+
+    msg = await thread.send(
+        content=_caption(week,t1,t2,streamer,link),
+        file=File(flyer_path),
+        allowed_mentions=EVERYONE_MENTIONS
+    )
+    try: await msg.pin()
+    except: pass
+    return msg
+
+# Late-link watcher (edits pinned caption once; no new ping)
+async def watch_first_link_and_edit(thread, author_id: int, posted_msg_id: int, week: int, t1: str, t2: str, streamer: str):
+    def _check(m: nextcord.Message):
+        return (
+            m.channel.id == thread.id and
+            m.author.id == author_id and
+            find_stream_link(m.content) is not None
+        )
+    try:
+        m = await bot.wait_for("message", timeout=3600, check=_check)  # 60 minutes
+        link = find_stream_link(m.content)
+        if not link: return
+        msg = await thread.fetch_message(posted_msg_id)
+        await msg.edit(content=_caption(week, t1, t2, streamer, link), allowed_mentions=AllowedMentions.none())
+    except asyncio.TimeoutError:
+        pass
+    except Exception as e:
+        logger.warning(f"late-link watcher: {e}")
+
+
+# The trigger: on_thread_create (new block)
+@bot.event
+async def on_thread_create(thread: nextcord.Thread):
+    # only in game-streams forum
+    if thread.parent_id != GAME_STREAMS_FORUM_ID:
+        return
+
+    # parse WEEK + teams from title
+    week, t1, t2 = parse_title_for_week_and_teams(thread.name or "")
+    if not week or not t1 or not t2:
+        try:
+            await thread.send("Add a clear title like `Week 6 • GIANTS vs COWBOYS` so I can create the flyer.")
+        except: pass
+        return
+
+    # eligibility: author should be one of teams (unless Admin or Broadcaster)
+    try:
+        author = await thread.guild.fetch_member(thread.owner_id)
+    except Exception:
+        author = None
+
+    author_team = extract_team_from_nick(getattr(author, "display_name", "") or "")
+    allowed = False
+    if author:
+        is_staff = any(r.name in (ADMIN_ROLE_NAME, "Broadcaster") for r in author.roles)
+        if is_staff: allowed = True
+    if not allowed and author_team and author_team in (t1, t2):
+        allowed = True
+
+    if not allowed:
+        try:
+            await thread.send("Only a participant or Broadcaster can create the flyer.")
+        except: pass
+        return
+
+    # de-dupe
+    if registry_has(week, t1, t2):
+        return  # already posted
+
+    # starter message & link
+    link = None
+    try:
+        parent = thread.parent
+        starter = await parent.fetch_message(thread.id)
+        link = find_stream_link(getattr(starter, "content", ""))
+    except Exception:
+        pass
+
+    streamer_display = getattr(author, "display_name", "Unknown")
+
+    # render flyer
+    try:
+        flyer_path = render_flyer_png(week, *sorted_pair(t1,t2), streamer=streamer_display, link=link)
+    except Exception as e:
+        logger.error(f"flyer render failed: {e}")
+        try:
+            await thread.send("Couldn’t render flyer. Check that logo PNGs exist in your logos folder.")
+        except: pass
+        return
+
+    # post + pin + record
+    msg = await post_flyer_with_everyone(thread, flyer_path, week, *sorted_pair(t1,t2), streamer_display, link)
+    registry_put(week, t1, t2, {
+        "thread_id": thread.id,
+        "message_id": msg.id,
+        "flyer_path": flyer_path,
+        "author_id": getattr(author, "id", 0),
+        "ts": datetime.utcnow().isoformat()+"Z"
+    })
+
+    # if no link yet, watch for the first one from the author and edit once
+    if not link and author:
+        bot.loop.create_task(watch_first_link_and_edit(thread, author.id, msg.id, week, *sorted_pair(t1,t2), streamer_display))
+
 
 # Timezone explanation helper
 def extract_timezone_code(nickname):

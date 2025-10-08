@@ -80,6 +80,7 @@ GG_ALERT_CHANNEL_ID = int(os.getenv("GG_ALERT_CHANNEL_ID", "0") or 0)  # where t
 GG_ALERT_MENTION_USER_ID = int(os.getenv("GG_ALERT_MENTION_USER_ID", "0") or 0)  # who to @mention in the alert
 
 GAME_STREAMS_FORUM_ID = int(os.getenv("GAME_STREAMS_FORUM_ID", "0") or 0)
+GAME_STREAMS_CHANNEL_ID = int(os.getenv("GAME_STREAMS_CHANNEL_ID", "0") or 0)
 LOGOS_DIR = os.getenv("LOGOS_DIR", "./static/logos")
 FLYER_OUT_DIR = os.getenv("FLYER_OUT_DIR", "./static/flyers")
 EVERYONE_MENTIONS = AllowedMentions(everyone=True, users=False, roles=False, replied_user=False)
@@ -1587,6 +1588,48 @@ async def on_message(msg):
             if msg.author.id in tracker["member_ids"]:
                 tracker["responses"].add(msg.author.id)  # Mark the member as having responded
         await bot.process_commands(msg)  # Ensure bot commands in on_message are handled
+
+    # --- Text-channel flyer trigger for game-streams ----------------------------
+    try:
+        if (
+                msg.guild
+                and GAME_STREAMS_CHANNEL_ID
+                and msg.channel.id == GAME_STREAMS_CHANNEL_ID
+        ):
+            link = find_stream_link(msg.content or "")
+            if link:
+                # Try to parse "Week N • TEAM vs TEAM"
+                week, t1, t2 = parse_title_for_week_and_teams(msg.content or "")
+                if not (t1 and t2):
+                    # fallback: look for "TEAM vs TEAM" in message
+                    m = re.search(r"\b([A-Z][A-Z ]+?)\s*(?:vs|[-–])\s*([A-Z][A-Z ]+)\b", msg.content.upper())
+                    if m:
+                        t1, t2 = canonical_team(m.group(1)), canonical_team(m.group(2))
+
+                if not week:
+                    # fallback: "Week 7" somewhere in the text
+                    m = re.search(r"\bW(?:EEK)?\s*(\d{1,2})\b", msg.content, re.IGNORECASE)
+                    week = int(m.group(1)) if m else 0  # 0 if missing
+
+                if t1 and t2:
+                    flyer_path = render_flyer_png(
+                        week or 0, *sorted_pair(t1, t2),
+                        streamer=msg.author.display_name,
+                        link=link
+                    )
+                    await post_flyer_with_everyone(
+                        msg.channel, flyer_path,
+                        week or 0, *sorted_pair(t1, t2),
+                        msg.author.display_name, link
+                    )
+                else:
+                    await msg.channel.send(
+                        "✅ I found your link, but I couldn’t detect both teams.\n"
+                        "Please include a line like `Week 7 • EAGLES vs COWBOYS`."
+                    )
+    except Exception as e:
+        logger.warning(f"game-streams text handler failed: {e}")
+    # --- end text-channel flyer trigger -----------------------------------------
 
     # PUT ONE WORD COMMANDS AFTER THIS STATEMENT THAT EVERYONE CAN USE
 

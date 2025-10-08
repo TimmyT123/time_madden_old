@@ -166,6 +166,74 @@ TITLE_RE = re.compile(
     re.IGNORECASE
 )
 
+
+ADVANCE_CHANNEL_ID = int(os.getenv("ADVANCE_CHANNEL_ID", "0") or 0)
+
+WEEK_STATE_FILE = "data/week_state.json"
+os.makedirs("data", exist_ok=True)
+
+def _load_week_state():
+    try:
+        with open(WEEK_STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"week": 0, "matchups": []}  # matchups: list of [TEAM_A, TEAM_B]
+    except Exception:
+        return {"week": 0, "matchups": []}
+
+def _save_week_state(week: int, matchups: list[list[str]]):
+    with open(WEEK_STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"week": week, "matchups": matchups}, f, indent=2)
+
+def get_current_week_and_matchups():
+    st = _load_week_state()
+    return int(st.get("week", 0)), st.get("matchups", [])
+
+ADVANCE_LINE_RE = re.compile(
+    r"^\s*([A-Za-z .’'-]+)\s*\([^)]*\)\s*vs\s*([A-Za-z .’'-]+)\s*\([^)]*\)\s*$",
+    re.IGNORECASE
+)
+
+def parse_advance_message(text: str):
+    """
+    Expects something like:
+      WEEK 16
+      49ers(U) vs Colts(U)
+      Bengals(U) vs Dolphins(U)
+      ...
+    Returns: (week:int, matchups:[[TEAM, TEAM], ...]) with canonical ALL-CAPS names
+    """
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    if not lines:
+        return 0, []
+
+    # find "WEEK N"
+    week = 0
+    for ln in lines[:3]:
+        m = re.search(r"\bW(?:EEK)?\s*(\d{1,2})\b", ln, re.IGNORECASE)
+        if m:
+            week = int(m.group(1))
+            break
+
+    matchups = []
+    for ln in lines:
+        m = ADVANCE_LINE_RE.match(ln)
+        if not m:
+            continue
+        a = canonical_team(m.group(1).upper())
+        b = canonical_team(m.group(2).upper())
+        if a and b:
+            matchups.append([a, b])
+    return week, matchups
+
+def opponent_for_team(team: str, matchups: list[list[str]]):
+    team = canonical_team(team)
+    for a, b in matchups:
+        if team == a: return b
+        if team == b: return a
+    return None
+
+
 def find_stream_link(text: str) -> str | None:
     if not text: return None
     m = LINK_RE.search(text)
@@ -1589,27 +1657,51 @@ async def on_message(msg):
                 tracker["responses"].add(msg.author.id)  # Mark the member as having responded
         await bot.process_commands(msg)  # Ensure bot commands in on_message are handled
 
+    # --- Advance channel watcher: cache WEEK + matchups -------------------------
+    try:
+        if msg.guild and ADVANCE_CHANNEL_ID and msg.channel.id == ADVANCE_CHANNEL_ID:
+            wk, mus = parse_advance_message(msg.content or "")
+            if wk and mus:
+                _save_week_state(wk, mus)
+                logger.info(f"Cached WEEK {wk} with {len(mus)} matchups from advance.")
+    except Exception as e:
+        logger.warning(f"advance parser failed: {e}")
+    # ---------------------------------------------------------------------------
+
     # --- Text-channel flyer trigger for game-streams ----------------------------
     try:
-        if (
-                msg.guild
-                and GAME_STREAMS_CHANNEL_ID
-                and msg.channel.id == GAME_STREAMS_CHANNEL_ID
-        ):
+        if msg.guild and GAME_STREAMS_CHANNEL_ID and msg.channel.id == GAME_STREAMS_CHANNEL_ID:
             link = find_stream_link(msg.content or "")
-            if link:
-                # Try to parse "Week N • TEAM vs TEAM"
+            if not link:
+                # nothing to do if no stream link
+                pass
+            else:
+                # Try to parse week/teams directly from the message first
                 week, t1, t2 = parse_title_for_week_and_teams(msg.content or "")
+
                 if not (t1 and t2):
-                    # fallback: look for "TEAM vs TEAM" in message
-                    m = re.search(r"\b([A-Z][A-Z ]+?)\s*(?:vs|[-–])\s*([A-Z][A-Z ]+)\b", msg.content.upper())
+                    # Fallback: TEAM vs TEAM anywhere in message
+                    m = re.search(r"\b([A-Z][A-Z ]+?)\s*(?:vs|[-–])\s*([A-Z][A-Z ]+)\b",
+                                  (msg.content or "").upper())
                     if m:
                         t1, t2 = canonical_team(m.group(1)), canonical_team(m.group(2))
 
+                # If we still don't have both, use advance cache + nickname
+                if not (t1 and t2):
+                    cur_week, matchups = get_current_week_and_matchups()
+                    # poster team from their nickname
+                    poster_team = extract_team_from_nick(getattr(msg.author, "display_name", "") or "")
+                    if poster_team and matchups:
+                        opp = opponent_for_team(poster_team, matchups)
+                        if opp:
+                            t1, t2 = sorted_pair(poster_team, opp)
+                            if not week:
+                                week = cur_week
+
+                # If week not found, try generic "Week N" somewhere
                 if not week:
-                    # fallback: "Week 7" somewhere in the text
-                    m = re.search(r"\bW(?:EEK)?\s*(\d{1,2})\b", msg.content, re.IGNORECASE)
-                    week = int(m.group(1)) if m else 0  # 0 if missing
+                    m = re.search(r"\bW(?:EEK)?\s*(\d{1,2})\b", msg.content or "", re.IGNORECASE)
+                    week = int(m.group(1)) if m else get_current_week_and_matchups()[0]
 
                 if t1 and t2:
                     flyer_path = render_flyer_png(

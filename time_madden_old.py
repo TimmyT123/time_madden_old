@@ -1727,42 +1727,62 @@ async def on_message(msg):
     try:
         if msg.guild and GAME_STREAMS_CHANNEL_ID and msg.channel.id == GAME_STREAMS_CHANNEL_ID:
             link = find_stream_link(msg.content or "")
-            if link:
-                # Try to parse week & both teams from message
+            if not link:
+                # nothing to do if there's no stream link
+                pass
+            else:
+                # 1) Try to read week & teams directly from the message
                 week, t1, t2 = parse_title_for_week_and_teams(msg.content or "")
 
-                # If no explicit week, use the learned week
+                # 2) If no explicit week, use the latest learned week from the advance post
                 if not week and _current_week:
                     week = _current_week
 
-                # Try fallback "TEAM vs TEAM" in free text
+                # 3) Fallback: "TEAM vs TEAM" in free text
                 if not (t1 and t2):
                     m = re.search(r"\b([A-Z][A-Z ]+?)\s*(?:vs|[-–])\s*([A-Z][A-Z ]+)\b", (msg.content or "").upper())
                     if m:
                         t1, t2 = canonical_team(m.group(1)), canonical_team(m.group(2))
 
-                # If still missing a team, infer from learned advance:
-                if _current_matchups:
-                    if t1 and not t2:
-                        t2 = _current_matchups.get(canonical_team(t1))
-                    elif t2 and not t1:
-                        t1 = _current_matchups.get(canonical_team(t2))
-                    elif not (t1 and t2):
-                        # Try to detect one team name inside message and look up opponent
-                        for team in _current_matchups.keys():
-                            if re.search(rf"\b{team}\b", (msg.content or "").upper()):
-                                opp = _current_matchups.get(team)
-                                if opp:
-                                    # Choose left/right as in the learned pairs
-                                    # prefers the exact pair order from advance
-                                    for L, R in _current_pairs:
-                                        if {L, R} == {team, opp}:
-                                            t1, t2 = L, R
-                                            break
-                                    if not (t1 and t2):
-                                        t1, t2 = team, opp
-                                    break
+                # 4) Still missing something? Use the author's nickname to infer their team,
+                #    then pull the opponent from the advance mapping we learned.
+                if _current_matchups and (not t1 or not t2):
+                    author_team = extract_team_from_nick(msg.author.display_name or "")
+                    if author_team:
+                        # If we have exactly one team, make sure it's aligned with the author's team
+                        if not t1 and not t2:
+                            # Neither found in text -> start from author
+                            opp = _current_matchups.get(author_team)
+                            if opp:
+                                # Preserve left/right as posted in the advance list if possible
+                                for L, R in _current_pairs:
+                                    if {L, R} == {author_team, opp}:
+                                        t1, t2 = L, R
+                                        break
+                                if not (t1 and t2):
+                                    t1, t2 = author_team, opp
+                        elif t1 and not t2:
+                            # We found t1 in text; if t1 == author, find their opponent
+                            opp = _current_matchups.get(t1) or _current_matchups.get(author_team)
+                            if opp:
+                                # Keep advance ordering if we can
+                                for L, R in _current_pairs:
+                                    if {L, R} == {t1, opp}:
+                                        t1, t2 = L, R
+                                        break
+                                if not (t1 and t2):
+                                    t2 = opp
+                        elif t2 and not t1:
+                            opp = _current_matchups.get(t2) or _current_matchups.get(author_team)
+                            if opp:
+                                for L, R in _current_pairs:
+                                    if {L, R} == {t2, opp}:
+                                        t1, t2 = L, R
+                                        break
+                                if not (t1 and t2):
+                                    t1 = opp
 
+                # 5) Final guard: if we have both teams, render & post; else ask for a hint
                 if t1 and t2:
                     flyer_path = render_flyer_png(
                         week or 0, t1, t2,
@@ -1774,12 +1794,11 @@ async def on_message(msg):
                         week or 0, t1, t2,
                         msg.author.display_name, link
                     )
-                    # De-dupe registry still uses sorted key:
+                    # Registry uses a sorted key; this prevents duplicate flyers for same matchup.
                     registry_put(week or 0, t1, t2, {"message_id": None})
                 else:
                     await msg.channel.send(
-                        "✅ I found your link, but I couldn’t detect both teams.\n"
-                        "Please include a line like `Week 7 • EAGLES vs COWBOYS`."
+                        "✅ I found your link, but the flyer is still a work in progress...\n"
                     )
     except Exception as e:
         logger.warning(f"game-streams text handler failed: {e}")

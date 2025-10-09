@@ -172,6 +172,57 @@ ADVANCE_CHANNEL_ID = int(os.getenv("ADVANCE_CHANNEL_ID", "0") or 0)
 WEEK_STATE_FILE = "data/week_state.json"
 os.makedirs("data", exist_ok=True)
 
+# Learned each advance:
+_current_week: int | None = None
+# team -> opponent
+_current_matchups: dict[str, str] = {}
+# list of (left_team, right_team) in the written order
+_current_pairs: list[tuple[str, str]] = []
+
+TEAM_NAME_RE = r"[A-Z][A-Za-z ]+"  # simple, forgiving
+
+def _canon_team_for_lookup(s: str) -> str:
+    return canonical_team(s.upper())
+
+def _parse_advance_block(text: str):
+    """
+    Parses an advance post like:
+      WEEK 17
+      Eagles(U) vs Bills(U)
+      ...
+    Returns (week, pairs, mapping)
+    """
+    week = None
+    pairs = []
+    mapping = {}
+
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    for ln in lines:
+        mweek = re.search(r"\bWEEK\s*(\d{1,2})\b", ln, re.IGNORECASE)
+        if mweek:
+            week = int(mweek.group(1))
+            continue
+
+        m = re.match(
+            rf"^\s*({TEAM_NAME_RE})\s*\([^)]*\)\s*vs\s*({TEAM_NAME_RE})\s*\([^)]*\)\s*$",
+            ln, flags=re.IGNORECASE
+        )
+        if not m:
+            # try without (U)/(C)
+            m = re.match(
+                rf"^\s*({TEAM_NAME_RE})\s*vs\s*({TEAM_NAME_RE})\s*$",
+                ln, flags=re.IGNORECASE
+            )
+        if m:
+            left = _canon_team_for_lookup(m.group(1))
+            right = _canon_team_for_lookup(m.group(2))
+            pairs.append((left, right))
+            mapping[left] = right
+            mapping[right] = left
+
+    return week, pairs, mapping
+
+
 def _load_week_state():
     try:
         with open(WEEK_STATE_FILE, "r", encoding="utf-8") as f:
@@ -1660,60 +1711,71 @@ async def on_message(msg):
     # --- Advance channel watcher: cache WEEK + matchups -------------------------
     try:
         if msg.guild and ADVANCE_CHANNEL_ID and msg.channel.id == ADVANCE_CHANNEL_ID:
-            wk, mus = parse_advance_message(msg.content or "")
-            if wk and mus:
-                _save_week_state(wk, mus)
-                logger.info(f"Cached WEEK {wk} with {len(mus)} matchups from advance.")
+            wk, pairs, mapping = _parse_advance_block(msg.content or "")
+            if wk and pairs:
+                global _current_week, _current_pairs, _current_matchups
+                _current_week = wk
+                _current_pairs = pairs
+                _current_matchups = mapping
+                logger.info(f"Advance learned: WEEK={wk}, games={len(pairs)}")
     except Exception as e:
-        logger.warning(f"advance parser failed: {e}")
+        logger.warning(f"advance parse failed: {e}")
+
     # ---------------------------------------------------------------------------
 
     # --- Text-channel flyer trigger for game-streams ----------------------------
     try:
         if msg.guild and GAME_STREAMS_CHANNEL_ID and msg.channel.id == GAME_STREAMS_CHANNEL_ID:
             link = find_stream_link(msg.content or "")
-            if not link:
-                # nothing to do if no stream link
-                pass
-            else:
-                # Try to parse week/teams directly from the message first
+            if link:
+                # Try to parse week & both teams from message
                 week, t1, t2 = parse_title_for_week_and_teams(msg.content or "")
 
+                # If no explicit week, use the learned week
+                if not week and _current_week:
+                    week = _current_week
+
+                # Try fallback "TEAM vs TEAM" in free text
                 if not (t1 and t2):
-                    # Fallback: TEAM vs TEAM anywhere in message
-                    m = re.search(r"\b([A-Z][A-Z ]+?)\s*(?:vs|[-–])\s*([A-Z][A-Z ]+)\b",
-                                  (msg.content or "").upper())
+                    m = re.search(r"\b([A-Z][A-Z ]+?)\s*(?:vs|[-–])\s*([A-Z][A-Z ]+)\b", (msg.content or "").upper())
                     if m:
                         t1, t2 = canonical_team(m.group(1)), canonical_team(m.group(2))
 
-                # If we still don't have both, use advance cache + nickname
-                if not (t1 and t2):
-                    cur_week, matchups = get_current_week_and_matchups()
-                    # poster team from their nickname
-                    poster_team = extract_team_from_nick(getattr(msg.author, "display_name", "") or "")
-                    if poster_team and matchups:
-                        opp = opponent_for_team(poster_team, matchups)
-                        if opp:
-                            t1, t2 = sorted_pair(poster_team, opp)
-                            if not week:
-                                week = cur_week
-
-                # If week not found, try generic "Week N" somewhere
-                if not week:
-                    m = re.search(r"\bW(?:EEK)?\s*(\d{1,2})\b", msg.content or "", re.IGNORECASE)
-                    week = int(m.group(1)) if m else get_current_week_and_matchups()[0]
+                # If still missing a team, infer from learned advance:
+                if _current_matchups:
+                    if t1 and not t2:
+                        t2 = _current_matchups.get(canonical_team(t1))
+                    elif t2 and not t1:
+                        t1 = _current_matchups.get(canonical_team(t2))
+                    elif not (t1 and t2):
+                        # Try to detect one team name inside message and look up opponent
+                        for team in _current_matchups.keys():
+                            if re.search(rf"\b{team}\b", (msg.content or "").upper()):
+                                opp = _current_matchups.get(team)
+                                if opp:
+                                    # Choose left/right as in the learned pairs
+                                    # prefers the exact pair order from advance
+                                    for L, R in _current_pairs:
+                                        if {L, R} == {team, opp}:
+                                            t1, t2 = L, R
+                                            break
+                                    if not (t1 and t2):
+                                        t1, t2 = team, opp
+                                    break
 
                 if t1 and t2:
                     flyer_path = render_flyer_png(
-                        week or 0, *sorted_pair(t1, t2),
+                        week or 0, t1, t2,
                         streamer=msg.author.display_name,
                         link=link
                     )
                     await post_flyer_with_everyone(
                         msg.channel, flyer_path,
-                        week or 0, *sorted_pair(t1, t2),
+                        week or 0, t1, t2,
                         msg.author.display_name, link
                     )
+                    # De-dupe registry still uses sorted key:
+                    registry_put(week or 0, t1, t2, {"message_id": None})
                 else:
                     await msg.channel.send(
                         "✅ I found your link, but I couldn’t detect both teams.\n"
@@ -1722,6 +1784,7 @@ async def on_message(msg):
     except Exception as e:
         logger.warning(f"game-streams text handler failed: {e}")
     # --- end text-channel flyer trigger -----------------------------------------
+
 
     # PUT ONE WORD COMMANDS AFTER THIS STATEMENT THAT EVERYONE CAN USE
 

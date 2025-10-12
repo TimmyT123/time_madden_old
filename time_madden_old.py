@@ -662,10 +662,33 @@ def load_ap_users():
             continue
     return active
 
-def is_on_ap(user_id: int, ap_users=None):
+def _normalize_id(value) -> str | None:
+    """
+    Coerce a Discord ID (int or string) to a normalized numeric-string.
+    Returns None if it cannot be parsed as an integer.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    try:
+        # int(...) tolerates leading/trailing spaces and leading zeros;
+        # We return canonical digits as a string.
+        return str(int(s))
+    except Exception:
+        return None
+
+def is_on_ap(user_id: int | str, ap_users=None):
+    """
+    Returns the AP entry dict if user_id is currently on AP, else None.
+    Works whether ap_users.json stores IDs as ints or strings.
+    """
     ap_users = ap_users if ap_users is not None else load_ap_users()
+    target = _normalize_id(user_id)
+    if target is None:
+        return None
     for u in ap_users:
-        if int(u.get("user_id", 0)) == int(user_id):
+        uid = _normalize_id(u.get("user_id"))
+        if uid is not None and uid == target:
             return u
     return None
 
@@ -676,17 +699,12 @@ def _active_ap_signature():
     Only keys that define 'active identity' are included so edits to notes, etc.
     won't spam unless they affect activation window or user id.
     """
-    active = load_ap_users()  # already respects start/until
+    active = load_ap_users()
     key_tuples = []
     for u in active:
-        key_tuples.append((
-            str(u.get("user_id", "")),
-            (u.get("start") or ""),   # may be ""
-            (u.get("until") or "")
-        ))
-    # Sort so order doesn’t affect the signature
+        uid = _normalize_id(u.get("user_id")) or ""  # normalize
+        key_tuples.append((uid, (u.get("start") or ""), (u.get("until") or "")))
     return tuple(sorted(key_tuples))
-
 
 async def ap_autopost_watcher():
     """

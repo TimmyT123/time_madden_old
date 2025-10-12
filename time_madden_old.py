@@ -454,10 +454,12 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
     canvas.convert("RGB").save(path, "PNG")
     return path
 
+def _noembed(url: str | None) -> str:
+    return f"<{url}>" if url else ""
 
 # Posting helper with @everyone (and pin)
 def _caption(week: int, t1: str, t2: str, streamer: str, link: str | None) -> str:
-    link_line = f"Live: {link}" if link else "Live: (link pending)"
+    link_line = f"Live: {_noembed(link) or '(link pending)'}"
     return (
         "@everyone\n"
         f"**WURD • WEEK {week}**\n"
@@ -475,8 +477,15 @@ async def post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer, l
             file=File(flyer_path),
             allowed_mentions=AllowedMentions.none()
         )
-        try: await msg.pin()
-        except: pass
+        try:
+            await msg.pin()
+        except:
+            pass
+        # ⬇️ suppress the URL preview
+        try:
+            await msg.edit(suppress=True)
+        except:
+            pass
         return msg
 
     msg = await thread.send(
@@ -484,8 +493,15 @@ async def post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer, l
         file=File(flyer_path),
         allowed_mentions=EVERYONE_MENTIONS
     )
-    try: await msg.pin()
-    except: pass
+    try:
+        await msg.pin()
+    except:
+        pass
+    # ⬇️ suppress the URL preview
+    try:
+        await msg.edit(suppress=True)
+    except:
+        pass
     return msg
 
 # Late-link watcher (edits pinned caption once; no new ping)
@@ -497,16 +513,24 @@ async def watch_first_link_and_edit(thread, author_id: int, posted_msg_id: int, 
             find_stream_link(m.content) is not None
         )
     try:
-        m = await bot.wait_for("message", timeout=3600, check=_check)  # 60 minutes
+        m = await bot.wait_for("message", timeout=3600, check=_check)
         link = find_stream_link(m.content)
-        if not link: return
+        if not link:
+            return
         msg = await thread.fetch_message(posted_msg_id)
-        await msg.edit(content=_caption(week, t1, t2, streamer, link), allowed_mentions=AllowedMentions.none())
+        await msg.edit(
+            content=_caption(week, t1, t2, streamer, link),
+            allowed_mentions=AllowedMentions.none()
+        )
+        # ⬇️ make sure the edited message also has no preview
+        try:
+            await msg.edit(suppress=True)
+        except:
+            pass
     except asyncio.TimeoutError:
         pass
     except Exception as e:
         logger.warning(f"late-link watcher: {e}")
-
 
 # The trigger: on_thread_create (new block)
 @bot.event
@@ -1815,9 +1839,10 @@ async def on_message(msg):
                     # Registry uses a sorted key; this prevents duplicate flyers for same matchup.
                     registry_put(week or 0, t1, t2, {"message_id": None})
                 else:
-                    await msg.channel.send(
-                        "✅ I found your link, but the flyer is still a work in progress...\n"
-                    )
+                    logger.warning("The bot was not able to post the flyer in game-streams")
+                    # await msg.channel.send(
+                    #     "✅ I found your link, but the flyer is still a work in progress...\n"
+                    # )
     except Exception as e:
         logger.warning(f"game-streams text handler failed: {e}")
     # --- end text-channel flyer trigger -----------------------------------------

@@ -1359,37 +1359,43 @@ def split_message(message, max_length=2000):
 
 # Function to check members in a specific channel and save nicknames matching NFL teams
 def nicknames_to_users_file():
-    """Scan the whole guild and write wurd24users.csv with user-controlled teams
-       using the original NFL_Teams.csv casing (Title Case)."""
+    """
+    Scan the whole guild, mark a team 'taken' if a member's display name
+    starts with that team name (case-insensitive). Write the exact Title-Case
+    team names into wurd24users.csv.
+    """
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         logger.error(f"Guild {GUILD_ID} not found.")
         return
 
-    # Load NFL teams and build a map UPPER -> Original
+    # Load the Title-Case list exactly as in NFL_Teams.csv
     try:
         with open('NFL_Teams.csv', 'r', encoding='utf-8') as f:
-            original_list = [ln.strip() for ln in f if ln.strip()]
+            teams_title_case = [ln.strip() for ln in f if ln.strip()]
     except FileNotFoundError:
         logger.error("NFL_Teams.csv not found.")
         return
 
-    upper_to_original = {t.upper(): t for t in original_list}
+    # Build regexes like: ^Cardinals\b, ^49ers\b, ^Buccaneers\b, ...
+    patterns = {t: re.compile(rf"^\s*{re.escape(t)}\b", re.IGNORECASE) for t in teams_title_case}
 
-    controlled_original_case = set()
-
+    taken = set()
     for m in guild.members:
         if getattr(m, "bot", False):
             continue
-        team_upper = extract_team_from_nick(m.display_name or m.name or "")  # returns UPPER canonical
-        if team_upper and team_upper in upper_to_original:
-            controlled_original_case.add(upper_to_original[team_upper])  # write Title Case
+        name = (m.display_name or m.name or "").strip()
+        for team, pat in patterns.items():
+            if pat.search(name):
+                taken.add(team)
+                break  # one team per member is enough
 
+    # Write the exact team strings (Title-Case) to CSV
     with open('wurd24users.csv', 'w', encoding='utf-8', newline='') as f:
-        for t in sorted(controlled_original_case):
-            f.write(t + '\n')
+        for team in sorted(taken, key=str.lower):
+            f.write(team + '\n')
 
-    logger.info(f"wurd24users.csv updated with {len(controlled_original_case)} user-controlled teams.")
+    logger.info(f"wurd24users.csv updated with {len(taken)} user-controlled teams.")
 
 
 

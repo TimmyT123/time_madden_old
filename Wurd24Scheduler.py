@@ -45,58 +45,28 @@ def check_all_teams_in_schedule(sched, NFL_Teams):
 
 
 def space_between_uu_and_uc_games(games_text):
-    first = False
     games_lst = games_text.split('\n')
-
-    for i, game in enumerate(games_lst):
-        # reset separator at any header
-        if re.match(r'^\s*(WEEK\s+\d+|PRE\s+\d+)\s*$', game.strip(), flags=re.IGNORECASE):
-            first = False
-
-        # only lines that show a team marker
-        if '(' not in game:
+    new_list = []
+    for line in games_lst:
+        line = line.strip()
+        if not line:
             continue
-
-        try:
-            # BYE for single-user entries like "Raiders(U)"
-            if re.match(r'^.+\(U\)\s*$', game.strip()):
-                games_lst[i] += ' - BYE'
-
-            # Separate first UC from UU (robust team tokens)
-            m = re.match(r'^.*?\((U|C)\)\s+vs\s+.*?\((U|C)\)', game.strip())
-            if m:
-                if m.group(1) != m.group(2) and not first:
-                    games_lst.insert(i, '\n')
-                    first = True
-        except:
+        if 'week' in line.lower() or 'pre' in line.lower():
+            new_list.append(line)
             continue
-
-    # Insert @everyone above each header line (WEEK n or PRE n)
-    space = 0
-    games_lst_copy = games_lst.copy()
-    for i, word in enumerate(games_lst_copy):
-        if re.match(r'^\s*(WEEK\s+\d+|PRE\s+\d+)\s*$', word.strip(), flags=re.IGNORECASE):
-            space += 1
-            games_lst.insert(i + space - 1, '@everyone')
-
-    games_lst = [game + '\n' for game in games_lst]  # put return in at the end of games
-
-    games_text = ''.join(games_lst) # make into a string
-
-    new_games_text = ''
-    num = 0
-    for char in games_text:
-        if char == '\n':  # get rid of triple \n
-            num += 1
-            if num == 3:
-                num = 0
-                continue
-            new_games_text += char
+        if 'vs' not in line:
+            # Only mark BYE if no 'vs' found
+            new_list.append(f"{line} - BYE")
         else:
-            num = 0
-            new_games_text += char
+            new_list.append(line)
+    # Add @everyone before each header
+    output = []
+    for i, line in enumerate(new_list):
+        if 'week' in line.lower() or 'pre' in line.lower():
+            output.append('@everyone')
+        output.append(line)
+    return '\n'.join(output)
 
-    return new_games_text
 
 
 def comp_or_user(games, users, NFL_Teams):

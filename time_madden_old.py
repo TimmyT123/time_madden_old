@@ -1360,50 +1360,41 @@ def split_message(message, max_length=2000):
 # Function to check members in a specific channel and save nicknames matching NFL teams
 def nicknames_to_users_file():
     """
-    Scan the guild; mark a team 'taken' if a member's display name starts with that team
-    (case-insensitive). Write exact Title-Case team names to wurd24users.csv and log matches.
+    Mark a team as 'taken' if a member's display name STARTS WITH the exact
+    team name from NFL_Teams.csv (case-insensitive). Writes Title-Case names.
     """
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         logger.error(f"Guild {GUILD_ID} not found.")
         return
 
-    # Load Title-Case teams exactly as they appear in NFL_Teams.csv
+    # Load official team list exactly as written in CSV (Title Case)
     try:
         with open('NFL_Teams.csv', 'r', encoding='utf-8') as f:
-            teams_title_case = [ln.strip() for ln in f if ln.strip()]
+            teams = [ln.strip() for ln in f if ln.strip()]
     except FileNotFoundError:
         logger.error("NFL_Teams.csv not found.")
         return
 
-    # Build anchored patterns: ^Team\b   (e.g., ^49ers\b, ^Jets\b)
-    patterns = {t: re.compile(rf"^\s*{re.escape(t)}\b", re.IGNORECASE) for t in teams_title_case}
+    # Compile “starts with TEAM” regex per team (case-insensitive)
+    patterns = {t: re.compile(rf"^\s*{re.escape(t)}\b", re.IGNORECASE) for t in teams}
 
     taken = set()
-    matched_details = []  # for logging
-
     for m in guild.members:
         if getattr(m, "bot", False):
             continue
         name = (m.display_name or m.name or "").strip()
         for team, pat in patterns.items():
             if pat.search(name):
-                taken.add(team)
-                matched_details.append((m.id, name, team))
-                break  # one team per member
+                taken.add(team)   # keep original Title Case from CSV
+                break
 
-    # Write CSV (Title-Case exactly as in NFL_Teams.csv)
+    # Write results in Title Case exactly like the CSV
     with open('wurd24users.csv', 'w', encoding='utf-8', newline='') as f:
         for team in sorted(taken, key=str.lower):
             f.write(team + '\n')
 
-    # Helpful logging so you can confirm quickly
-    logger.info("Matched members → teams:")
-    for uid, disp, team in matched_details:
-        logger.info(f"  {disp} ({uid}) -> {team}")
-
     logger.info(f"wurd24users.csv updated with {len(taken)} user-controlled teams.")
-    logger.info("Taken teams (from file write): " + ", ".join(sorted(taken, key=str.lower)))
 
 
 

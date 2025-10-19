@@ -1253,34 +1253,38 @@ def split_message(message, max_length=2000):
 
 # Function to check members in a specific channel and save nicknames matching NFL teams
 def nicknames_to_users_file():
-    """Scan the whole guild and write wurd24users.csv with user-controlled teams."""
+    """Scan the whole guild and write wurd24users.csv with user-controlled teams
+       using the original NFL_Teams.csv casing (Title Case)."""
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         logger.error(f"Guild {GUILD_ID} not found.")
         return
 
+    # Load NFL teams and build a map UPPER -> Original
     try:
         with open('NFL_Teams.csv', 'r', encoding='utf-8') as f:
-            nfl_team_list = [ln.strip() for ln in f if ln.strip()]
+            original_list = [ln.strip() for ln in f if ln.strip()]
     except FileNotFoundError:
         logger.error("NFL_Teams.csv not found.")
         return
 
-    nfl_set = {t.upper() for t in nfl_team_list}
+    upper_to_original = {t.upper(): t for t in original_list}
 
-    controlled = set()
+    controlled_original_case = set()
+
     for m in guild.members:
         if getattr(m, "bot", False):
             continue
-        team = extract_team_from_nick(m.display_name or m.name or "")
-        if team and team in nfl_set:
-            controlled.add(team)
+        team_upper = extract_team_from_nick(m.display_name or m.name or "")  # returns UPPER canonical
+        if team_upper and team_upper in upper_to_original:
+            controlled_original_case.add(upper_to_original[team_upper])  # write Title Case
 
     with open('wurd24users.csv', 'w', encoding='utf-8', newline='') as f:
-        for t in sorted(controlled):
+        for t in sorted(controlled_original_case):
             f.write(t + '\n')
 
-    logger.info(f"wurd24users.csv updated with {len(controlled)} user-controlled teams.")
+    logger.info(f"wurd24users.csv updated with {len(controlled_original_case)} user-controlled teams.")
+
 
 
 @bot.command(name='bot_permissions')

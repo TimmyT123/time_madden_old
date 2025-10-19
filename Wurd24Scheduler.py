@@ -179,8 +179,8 @@ def wurd_sched_main(WEEK):
             continue
 
         for user in users:
-            user1 = user.strip('\n')
-            if user1 in game:
+            user1 = user.strip()
+            if user1 and user1.lower() in game.lower():
                 gamesTemp.append(game.replace(',', ' vs '))
 
     check_if_user_not_in_current_week_games(gamesTemp, users)

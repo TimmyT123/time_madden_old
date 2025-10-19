@@ -159,24 +159,23 @@ def check_if_user_not_in_current_week_games(weekgames, users):
 
 
 def wurd_sched_main(WEEK):
-    # --- normalize the incoming token (handles "pre 1", "PRE 1", "PRE 1," etc.)
+    # normalize: handles "pre 1", "PRE 1", "PRE 1," etc.
     norm_week = (WEEK or "").strip().rstrip(",").upper()
 
     def _norm_token(s: str) -> str:
         return (s or "").strip().rstrip(",").upper()
 
-    # ---- build the full schedule text just like you already do ----
     sched = read_sched()
     users = read_users()
     NFL_Teams = read_NFL_Teams()
 
-    # (re)build the weekly text, but treat PRE and WEEK as headers
+    # build the weekly text; treat both WEEK and PRE as headers
     for game in sched:
         if re.match(r'^\s*(WEEK|PRE)\b', game, flags=re.IGNORECASE):
             check_if_user_not_in_current_week_games(gamesTemp, users)
             gamesTemp.clear()
             gamesTemp.append('\n')
-            gamesTemp.append(game.replace(',', ''))  # keep header line, drop trailing comma
+            gamesTemp.append(game.replace(',', ''))  # keep header, drop trailing comma
             continue
 
         for user in users:
@@ -188,28 +187,27 @@ def wurd_sched_main(WEEK):
     games_txt = comp_or_user(gameDupTempList, users, NFL_Teams)
     games_txt = space_between_uu_and_uc_games(games_txt)
 
-    # reset globals for next call
     gamesTemp.clear()
     gameDupTempList.clear()
     gameDupTempList2.clear()
 
-    # if ALL, return everything (without @everyone)
+    # "all" => return everything (no @everyone)
     if _norm_token(norm_week) == "ALL":
         return games_txt.replace("@everyone", "")
 
-    # --- slice out just the requested block (works for WEEK N and PRE N) ---
+    # slice only the requested block (works for WEEK N and PRE N)
     lines = games_txt.splitlines()
 
     def _is_header(line: str) -> bool:
         return bool(re.match(r'^\s*(WEEK\s+\d+|PRE\s+\d+)\s*$', _norm_token(line)))
 
-    # find the exact header line (token must match norm_week, e.g. "PRE 1" or "WEEK 2")
+    # find the exact header line that matches norm_week (e.g., "PRE 1")
     try:
         start = next(i for i, ln in enumerate(lines) if _norm_token(ln) == norm_week)
     except StopIteration:
         raise ValueError(f"Week token not found: {norm_week}")
 
-    # find the next header or EOF
+    # end is next header or EOF
     try:
         end = next(j for j in range(start + 1, len(lines)) if _is_header(lines[j]))
     except StopIteration:
@@ -217,7 +215,7 @@ def wurd_sched_main(WEEK):
 
     slice_str = "\n".join(lines[start:end])
 
-    # Save user–user pairings for forum creation
+    # persist user–user pairings for forum creation
     user_user_games = get_user_user_games(slice_str)
     save_user_user_games(user_user_games)
 

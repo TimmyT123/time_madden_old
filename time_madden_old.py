@@ -1253,35 +1253,40 @@ def split_message(message, max_length=2000):
 
 # Function to check members in a specific channel and save nicknames matching NFL teams
 def nicknames_to_users_file():
-    channel = bot.get_channel(1144688789248282806)  # Get specific channel by ID - lobby-talk
-    if channel is None:
-        logger.error("Channel with ID 1144688789248282806 not found.")
+    """Scan the whole guild and write wurd24users.csv with user-controlled teams."""
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        logger.error(f"Guild {GUILD_ID} not found.")
         return
 
-    members = channel.members  # List of members in the channel
-    memids = []  # List for storing member names/nicknames
-    wurd_teams = []  # List for storing team names matched with members
+    # load canonical NFL team names (one per line)
+    try:
+        with open('NFL_Teams.csv', 'r', encoding='utf-8') as f:
+            nfl_team_list = [ln.strip() for ln in f if ln.strip()]
+    except FileNotFoundError:
+        logger.error("NFL_Teams.csv not found.")
+        return
 
-    # Loop through each member in the channel to get nicknames
-    for member in members:
-        memids.append(member.nick or member.global_name)  # Add nickname or global name if nickname is None
-    for team in teams:
-        team_name = ''.join(team)  # Convert team list to a string
-        for mem in memids:
-            if mem[:4].lower() in team_name.lower():
-                wurd_teams.append(team_name)  # Append matching team name
+    # Build a set of detected user-controlled teams using your helpers
+    controlled: set[str] = set()
+    for m in guild.members:
+        if getattr(m, "bot", False):
+            continue
+        team = extract_team_from_nick(m.display_name or m.name or "")
+        if team:
+            controlled.add(team)
 
-    # Write matched team names to a CSV file
-    with open('wurd24users.csv', 'w', newline='') as f:
-        wr = csv.writer(f, delimiter='\n')
-        wr.writerow(wurd_teams)
-    logger.info("wurd24users.csv has been updated with matched team names.")
+    # Keep only teams that are in NFL_Teams.csv
+    nfl_set = {t.upper() for t in nfl_team_list}
+    controlled = {t for t in controlled if t in nfl_set}
 
-    # # Print matched team names for verification
-    # print('\nmembers:\n')
-    # for wt in wurd_teams:
-    #     print(wt)
-    # print()
+    # Write deduped list
+    with open('wurd24users.csv', 'w', encoding='utf-8', newline='') as f:
+        for t in sorted(controlled):
+            f.write(t + '\n')
+
+    logger.info(f"wurd24users.csv updated with {len(controlled)} user-controlled teams.")
+
 
 @bot.command(name='bot_permissions')
 async def bot_permissions(ctx):

@@ -49,7 +49,7 @@ def space_between_uu_and_uc_games(games_text):
     games_lst = games_text.split('\n')
 
     for i, game in enumerate(games_lst):
-        # reset "first" at any header (WEEK n or PRE n)
+        # reset separator at any header
         if re.match(r'^\s*(WEEK\s+\d+|PRE\s+\d+)\s*$', game.strip(), flags=re.IGNORECASE):
             first = False
 
@@ -170,14 +170,13 @@ def wurd_sched_main(WEEK):
     users = read_users()
     NFL_Teams = read_NFL_Teams()
 
-    # (build gamesTemp, gameDupTempList etc. exactly as you do now)
+    # (re)build the weekly text, but treat PRE and WEEK as headers
     for game in sched:
-        # treat both WEEK and PRE headers
-        if re.match(r'^\s*(week|pre)\b', game, flags=re.IGNORECASE):
+        if re.match(r'^\s*(WEEK|PRE)\b', game, flags=re.IGNORECASE):
             check_if_user_not_in_current_week_games(gamesTemp, users)
             gamesTemp.clear()
             gamesTemp.append('\n')
-            gamesTemp.append(game.replace(',', ''))
+            gamesTemp.append(game.replace(',', ''))  # keep header line, drop trailing comma
             continue
 
         for user in users:
@@ -189,31 +188,28 @@ def wurd_sched_main(WEEK):
     games_txt = comp_or_user(gameDupTempList, users, NFL_Teams)
     games_txt = space_between_uu_and_uc_games(games_txt)
 
+    # reset globals for next call
     gamesTemp.clear()
     gameDupTempList.clear()
     gameDupTempList2.clear()
 
-    # --- if ALL, just return the whole thing without @everyone ---
+    # if ALL, return everything (without @everyone)
     if _norm_token(norm_week) == "ALL":
         return games_txt.replace("@everyone", "")
 
-    # --- slice out the requested block (works for WEEK N and PRE N) ---
+    # --- slice out just the requested block (works for WEEK N and PRE N) ---
     lines = games_txt.splitlines()
 
     def _is_header(line: str) -> bool:
         return bool(re.match(r'^\s*(WEEK\s+\d+|PRE\s+\d+)\s*$', _norm_token(line)))
 
-    def _header_token(line: str) -> str:
-        # header lines in your output don’t have trailing commas anymore
-        return _norm_token(line)
-
-    # find start line whose token matches the request
+    # find the exact header line (token must match norm_week, e.g. "PRE 1" or "WEEK 2")
     try:
-        start = next(i for i, ln in enumerate(lines) if _header_token(ln) == norm_week)
+        start = next(i for i, ln in enumerate(lines) if _norm_token(ln) == norm_week)
     except StopIteration:
         raise ValueError(f"Week token not found: {norm_week}")
 
-    # find the next header after start (or end of file)
+    # find the next header or EOF
     try:
         end = next(j for j in range(start + 1, len(lines)) if _is_header(lines[j]))
     except StopIteration:
@@ -221,7 +217,7 @@ def wurd_sched_main(WEEK):
 
     slice_str = "\n".join(lines[start:end])
 
-    # continue your existing flow on just this week’s block
+    # Save user–user pairings for forum creation
     user_user_games = get_user_user_games(slice_str)
     save_user_user_games(user_user_games)
 

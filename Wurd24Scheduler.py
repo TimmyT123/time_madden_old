@@ -30,22 +30,17 @@ def read_NFL_Teams():
 
 
 def check_all_teams_in_schedule(sched, NFL_Teams):
-    n = 0
-    for i in sched:
-        n += 1
-        i = i[:-1]
-        if 'week' in i.lower() or len(i) < 3:
+    for n, i in enumerate(sched, start=1):
+        i = i.rstrip('\n')
+        # skip header rows like "WEEK 1," or "PRE 1,"
+        if re.match(r'^\s*(WEEK|PRE)\b', i, flags=re.IGNORECASE) or len(i) < 3:
             continue
-        if 'pre' in i.lower():
-            continue
+        # i is "TeamA,TeamB"
         new_teams = i.split(',')
         for team in new_teams:
-            team = team + '\n'
-            if team in NFL_Teams:
-                # print(f'{team} is good')
-                pass
-            else:
-                print(f'{team} at line #{n} is NOT good.....................Boom!')
+            team_line = (team.strip() + '\n')
+            if team_line not in NFL_Teams:
+                print(f'{team_line} at line #{n} is NOT good.....................Boom!')
                 quit()
 
 
@@ -54,33 +49,35 @@ def space_between_uu_and_uc_games(games_text):
     games_lst = games_text.split('\n')
 
     for i, game in enumerate(games_lst):
-        if 'week'.lower() in game.lower():
+        # reset "first" at any header (WEEK n or PRE n)
+        if re.match(r'^\s*(WEEK\s+\d+|PRE\s+\d+)\s*$', game.strip(), flags=re.IGNORECASE):
             first = False
 
-        if '(' not in game:  # this makes sure game has a user or cpu in it
+        # only lines that show a team marker
+        if '(' not in game:
             continue
 
         try:
-            pattern2 = r'^\w*\(U\)$'
-            m2 = re.match(pattern2, game)
-            if m2:
-                games_lst[i] += ' - BYE'  # Add BYE to single teams
+            # BYE for single-user entries like "Raiders(U)"
+            if re.match(r'^.+\(U\)\s*$', game.strip()):
+                games_lst[i] += ' - BYE'
 
-            pattern = r'\w*\((\w)\) vs \w*\((\w)'
-            m = re.match(pattern, game).groups()
-            if m[0] != m[1] and not first:
-                games_lst.insert(i, '\n')
-                first = True
+            # Separate first UC from UU (robust team tokens)
+            m = re.match(r'^.*?\((U|C)\)\s+vs\s+.*?\((U|C)\)', game.strip())
+            if m:
+                if m.group(1) != m.group(2) and not first:
+                    games_lst.insert(i, '\n')
+                    first = True
         except:
             continue
 
-    # ADD @everybody to the front of each week
+    # Insert @everyone above each header line (WEEK n or PRE n)
     space = 0
     games_lst_copy = games_lst.copy()
     for i, word in enumerate(games_lst_copy):
-        if 'week'.lower() in word.lower():
+        if re.match(r'^\s*(WEEK\s+\d+|PRE\s+\d+)\s*$', word.strip(), flags=re.IGNORECASE):
             space += 1
-            games_lst.insert(i+space-1, '@everyone')
+            games_lst.insert(i + space - 1, '@everyone')
 
     games_lst = [game + '\n' for game in games_lst]  # put return in at the end of games
 
@@ -124,12 +121,12 @@ def get_user_user_games(games_txt):
     games_lst = games_txt.split('\n')
 
     for game in games_lst:
-        if '(U)' in game and 'vs' in game:
-            pattern = r'(\w+\(U\)) vs (\w+\(U\))'
-            match = re.match(pattern, game)
-            if match:
-                user_user_games.append(f"{match.group(1)}-{match.group(2)}".replace("(U)", "").lower())
-
+        # Match "Team(U) vs Team(U)" with spaces/numbers allowed
+        m = re.match(r'^(?P<a>.+?)\s*\(U\)\s+vs\s+(?P<b>.+?)\s*\(U\)\s*$', game.strip())
+        if m:
+            a = m.group('a').strip().lower()
+            b = m.group('b').strip().lower()
+            user_user_games.append(f"{a}-{b}")
     return user_user_games
 
 
@@ -162,22 +159,23 @@ def check_if_user_not_in_current_week_games(weekgames, users):
 
 
 def wurd_sched_main(WEEK):
+    # --- normalize the incoming token (handles "pre 1", "PRE 1", "PRE 1," etc.)
+    norm_week = (WEEK or "").strip().rstrip(",").upper()
 
+    def _norm_token(s: str) -> str:
+        return (s or "").strip().rstrip(",").upper()
 
+    # ---- build the full schedule text just like you already do ----
     sched = read_sched()
     users = read_users()
     NFL_Teams = read_NFL_Teams()
 
-    if WEEK != 'all'.lower():
-        pattern_week_number = r'\w+ (\w+)'
-        WEEK_LAST_NUMBER = re.match(pattern_week_number, WEEK).groups()
-        WEEK_LAST_NUMBER_INT = int(WEEK_LAST_NUMBER[0])+1
-        WEEK_NEXT = 'WEEK ' + str(WEEK_LAST_NUMBER_INT)
-
+    # (build gamesTemp, gameDupTempList etc. exactly as you do now)
     for game in sched:
-        if 'week' in game.lower():
+        # treat both WEEK and PRE headers
+        if re.match(r'^\s*(week|pre)\b', game, flags=re.IGNORECASE):
             check_if_user_not_in_current_week_games(gamesTemp, users)
-            gamesTemp.clear()  # clear gamesTemp for the next week
+            gamesTemp.clear()
             gamesTemp.append('\n')
             gamesTemp.append(game.replace(',', ''))
             continue
@@ -192,30 +190,42 @@ def wurd_sched_main(WEEK):
     games_txt = space_between_uu_and_uc_games(games_txt)
 
     gamesTemp.clear()
-    gameDupTempList.clear()  # clear both of these global lists or it will keep growing the next time we use it
+    gameDupTempList.clear()
     gameDupTempList2.clear()
 
-    if WEEK == 'all'.lower():
-        games_txt = games_txt.replace("@everyone", "")  # take out all @everyone
-        return games_txt
+    # --- if ALL, just return the whole thing without @everyone ---
+    if _norm_token(norm_week) == "ALL":
+        return games_txt.replace("@everyone", "")
 
-    the_week = games_txt.index(WEEK.upper())
-    # try:
-    #     the_week = games_txt.index(WEEK.upper())
-    # except:
-    #     return  # TODO change to RETURN
+    # --- slice out the requested block (works for WEEK N and PRE N) ---
+    lines = games_txt.splitlines()
 
-    if WEEK_LAST_NUMBER_INT == 19:
-        the_next_week = -1
-    else:
-        the_next_week = games_txt.index(WEEK_NEXT.upper())-10
+    def _is_header(line: str) -> bool:
+        return bool(re.match(r'^\s*(WEEK\s+\d+|PRE\s+\d+)\s*$', _norm_token(line)))
 
-    games_txt = games_txt[the_week-10:the_next_week]  # displays only the week that we want
+    def _header_token(line: str) -> str:
+        # header lines in your output don’t have trailing commas anymore
+        return _norm_token(line)
 
-    user_user_games = get_user_user_games(games_txt)  # finding and saving the user-user games
+    # find start line whose token matches the request
+    try:
+        start = next(i for i, ln in enumerate(lines) if _header_token(ln) == norm_week)
+    except StopIteration:
+        raise ValueError(f"Week token not found: {norm_week}")
+
+    # find the next header after start (or end of file)
+    try:
+        end = next(j for j in range(start + 1, len(lines)) if _is_header(lines[j]))
+    except StopIteration:
+        end = len(lines)
+
+    slice_str = "\n".join(lines[start:end])
+
+    # continue your existing flow on just this week’s block
+    user_user_games = get_user_user_games(slice_str)
     save_user_user_games(user_user_games)
 
-    return games_txt
+    return slice_str
 
 
 def main():

@@ -181,6 +181,42 @@ _current_pairs: list[tuple[str, str]] = []
 
 TEAM_NAME_RE = r"[A-Z][A-Za-z ]+"  # simple, forgiving
 
+# --- Preseason support ---
+# Internally: PRE 1 -> week = -3, PRE 2 -> -2, PRE 3 -> -1
+def _pre_to_week(n: int) -> int:
+    return -(4 - n)  # 1->-3, 2->-2, 3->-1
+
+_PRE_LABELS = {-3: "PRE 1", -2: "PRE 2", -1: "PRE 3"}
+
+def week_label(week: int | None) -> str:
+    if week in _PRE_LABELS:
+        return f"WURD • {_PRE_LABELS[week]}"
+    if not week:
+        return "WURD"   # fallback if unknown
+    return f"WURD • WEEK {week}"
+
+def parse_week_token(text: str) -> int | None:
+    """
+    Finds 'WEEK 7' or 'PRE 2' in text and returns a normalized week number:
+      WEEK N -> N
+      PRE N  -> -3..-1 (for N=1..3)
+    """
+    if not text:
+        return None
+    # WEEK N
+    m = re.search(r"\bW(?:EEK)?\s*(\d{1,2})\b", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+
+    # PRE N or PRESEASON N
+    m = re.search(r"\bPRE(?:SEASON)?\s*(\d)\b", text, re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+        if 1 <= n <= 3:
+            return _pre_to_week(n)
+    return None
+
+
 def _canon_team_for_lookup(s: str) -> str:
     return canonical_team(s.upper())
 
@@ -198,9 +234,9 @@ def _parse_advance_block(text: str):
 
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     for ln in lines:
-        mweek = re.search(r"\bWEEK\s*(\d{1,2})\b", ln, re.IGNORECASE)
-        if mweek:
-            week = int(mweek.group(1))
+        wk_token = parse_week_token(ln)
+        if wk_token is not None:
+            week = wk_token
             continue
 
         m = re.match(
@@ -261,9 +297,9 @@ def parse_advance_message(text: str):
     # find "WEEK N"
     week = 0
     for ln in lines[:3]:
-        m = re.search(r"\bW(?:EEK)?\s*(\d{1,2})\b", ln, re.IGNORECASE)
-        if m:
-            week = int(m.group(1))
+        wk = parse_week_token(ln)
+        if wk is not None:
+            week = wk
             break
 
     matchups = []
@@ -303,13 +339,24 @@ def extract_team_from_nick(nick: str) -> str | None:
     m = re.match(r"^([A-Z0-9][A-Z0-9 ]+)\b", nick.strip())
     return canonical_team(m.group(1)) if m else None
 
-def parse_title_for_week_and_teams(title: str):
-    m = TITLE_RE.search(title or "")
-    if not m: return None, None, None
-    week = int(m.group(1))
-    t1 = canonical_team(m.group(2))
-    t2 = canonical_team(m.group(3))
-    return week, t1, t2
+# put this near TITLE_RE (or replace TITLE_RE with this teams-only regex)
+TEAMS_IN_TITLE_RE = re.compile(
+    r"\b([A-Z0-9][A-Z0-9 ]+?)\b\s+vs\s+\b([A-Z0-9][A-Z0-9 ]+?)\b",
+    re.IGNORECASE
+)
+
+def parse_title_for_week_and_teams(title: str) -> tuple[int | None, str | None, str | None]:
+    # week can be regular (e.g., WEEK 7) or preseason (e.g., PRE 2 / PRESEASON 2 -> negative week)
+    wk = parse_week_token(title or "")
+
+    m = TEAMS_IN_TITLE_RE.search(title or "")
+    if not m:
+        return wk, None, None
+
+    t1 = canonical_team(m.group(1))
+    t2 = canonical_team(m.group(2))
+    return wk, t1, t2
+
 
 def sorted_pair(a: str, b: str) -> tuple[str, str]:
     return tuple(sorted([a, b]))
@@ -358,10 +405,10 @@ FONT_HDR = _font(86, bold=True)
 FONT_SUB = _font(48, bold=True)
 FONT_BODY= _font(32)
 
-def _draw_header(draw, canvas, week: int):
+def _draw_header(draw, canvas, week: int | None):
     bar = Image.new("RGBA", (canvas.width, 110), (0,0,0,140))
     canvas.alpha_composite(bar, (0,0))
-    txt = f"WURD • WEEK {week}"
+    txt = week_label(week)  # <<— uses PRE/WEEK label
     tw, th = draw.textbbox((0,0), txt, font=FONT_HDR)[2:]
     draw.text(((canvas.width - tw)//2, 55 - th//2), txt, fill="white", font=FONT_HDR)
 
@@ -458,11 +505,12 @@ def _noembed(url: str | None) -> str:
     return f"<{url}>" if url else ""
 
 # Posting helper with @everyone (and pin)
-def _caption(week: int, t1: str, t2: str, streamer: str, link: str | None) -> str:
+def _caption(week: int | None, t1: str, t2: str, streamer: str, link: str | None) -> str:
     link_line = f"Live: {_noembed(link) or '(link pending)'}"
+    header = week_label(week).replace("WURD • ", "**") + "**"
     return (
         "@everyone\n"
-        f"**WURD • WEEK {week}**\n"
+        f"{header}\n"
         f"{t1} vs {t2}\n"
         f"Streamer: {streamer}\n"
         f"{link_line}"
@@ -539,39 +587,58 @@ async def on_thread_create(thread: nextcord.Thread):
     if thread.parent_id != GAME_STREAMS_FORUM_ID:
         return
 
-    # parse WEEK + teams from title
-    week, t1, t2 = parse_title_for_week_and_teams(thread.name or "")
-    if not week or not t1 or not t2:
-        try:
-            await thread.send("Add a clear title like `Week 6 • GIANTS vs COWBOYS` so I can create the flyer.")
-        except: pass
+    # 0) Do not create flyers during preseason
+    if _current_week is not None and _current_week < 1:
         return
 
-    # eligibility: author should be one of teams (unless Admin or Broadcaster)
+    # 1) Try to parse from title first (week may be None here)
+    week, t1, t2 = parse_title_for_week_and_teams(thread.name or "")
+
+    # 2) Fall back to learned advance mapping + author's nickname
     try:
         author = await thread.guild.fetch_member(thread.owner_id)
     except Exception:
         author = None
 
-    author_team = extract_team_from_nick(getattr(author, "display_name", "") or "")
+    if (not t1 or not t2) and _current_matchups and author:
+        author_team = extract_team_from_nick(getattr(author, "display_name", "") or "")
+        if author_team:
+            opp = _current_matchups.get(author_team)
+            if opp:
+                # Preserve left/right order from the advance list if we can
+                for L, R in _current_pairs:
+                    if {L, R} == {author_team, opp}:
+                        t1, t2 = L, R
+                        break
+                if not (t1 and t2):
+                    t1, t2 = author_team, opp
+
+    # 3) Normalize week: prefer parsed week, else use learned current week
+    if week is None and _current_week is not None:
+        week = _current_week
+
+    # 4) If we still don't have week or both teams, do nothing (no nag)
+    if not week or not (t1 and t2):
+        return
+
+    # 5) Eligibility: author must be one of teams unless Admin/Broadcaster
     allowed = False
     if author:
         is_staff = any(r.name in (ADMIN_ROLE_NAME, "Broadcaster") for r in author.roles)
-        if is_staff: allowed = True
-    if not allowed and author_team and author_team in (t1, t2):
-        allowed = True
-
+        if is_staff:
+            allowed = True
+        else:
+            author_team = extract_team_from_nick(getattr(author, "display_name", "") or "")
+            if author_team and author_team in (t1, t2):
+                allowed = True
     if not allowed:
-        try:
-            await thread.send("Only a participant or Broadcaster can create the flyer.")
-        except: pass
         return
 
-    # de-dupe
+    # 6) De-dupe
     if registry_has(week, t1, t2):
-        return  # already posted
+        return
 
-    # starter message & link
+    # 7) Starter message & link (best-effort)
     link = None
     try:
         parent = thread.parent
@@ -582,18 +649,14 @@ async def on_thread_create(thread: nextcord.Thread):
 
     streamer_display = getattr(author, "display_name", "Unknown")
 
-    # render flyer
+    # 8) Render & post flyer
     try:
-        flyer_path = render_flyer_png(week, *sorted_pair(t1,t2), streamer=streamer_display, link=link)
+        flyer_path = render_flyer_png(week, *sorted_pair(t1, t2), streamer=streamer_display, link=link)
     except Exception as e:
         logger.error(f"flyer render failed: {e}")
-        try:
-            await thread.send("Couldn’t render flyer. Check that logo PNGs exist in your logos folder.")
-        except: pass
         return
 
-    # post + pin + record
-    msg = await post_flyer_with_everyone(thread, flyer_path, week, *sorted_pair(t1,t2), streamer_display, link)
+    msg = await post_flyer_with_everyone(thread, flyer_path, week, *sorted_pair(t1, t2), streamer_display, link)
     registry_put(week, t1, t2, {
         "thread_id": thread.id,
         "message_id": msg.id,
@@ -602,9 +665,9 @@ async def on_thread_create(thread: nextcord.Thread):
         "ts": datetime.utcnow().isoformat()+"Z"
     })
 
-    # if no link yet, watch for the first one from the author and edit once
+    # 9) Late-link watcher
     if not link and author:
-        bot.loop.create_task(watch_first_link_and_edit(thread, author.id, msg.id, week, *sorted_pair(t1,t2), streamer_display))
+        bot.loop.create_task(watch_first_link_and_edit(thread, author.id, msg.id, week, *sorted_pair(t1, t2), streamer_display))
 
 
 # Timezone explanation helper
@@ -1773,12 +1836,15 @@ async def on_message(msg):
                 # nothing to do if there's no stream link
                 pass
             else:
-                # 1) Try to read week & teams directly from the message
                 week, t1, t2 = parse_title_for_week_and_teams(msg.content or "")
-
-                # 2) If no explicit week, use the latest learned week from the advance post
+                if not week:
+                    week = parse_week_token(msg.content or "")
                 if not week and _current_week:
                     week = _current_week
+
+                # skip preseason entirely
+                if (week or 0) < 1:
+                    return
 
                 # 3) Fallback: "TEAM vs TEAM" in free text
                 if not (t1 and t2):
@@ -1906,30 +1972,40 @@ async def on_message(msg):
         nicknames_to_users_file()  # Call function to save users with matching team names.  This updates discord teams to wurd24users.csv
 
         # checking 'week' plus one or two numbers or 'all'
-        pattern_week = r"^week \d{1,2}$"  # accept only 'week' plus one or two numbers
-        pattern_all = r"^all$"  # accept only 'all'
-        if re.fullmatch(pattern_week, msg_text) or re.fullmatch(pattern_all, msg_text):
-            week_schedule = wrd.wurd_sched_main(msg_text)  # Get the weekly or all schedule
+        pattern_week = r"^week \d{1,2}$"
+        pattern_pre = r"^pre\s*[123]$"  # NEW: pre 1, pre 2, pre 3
+        pattern_all = r"^all$"
+
+        if re.fullmatch(pattern_week, msg_text) or re.fullmatch(pattern_pre, msg_text) or re.fullmatch(pattern_all,
+                                                                                                       msg_text):
+            # Normalize what we pass into the scheduler
+            norm = msg_text
+            if re.fullmatch(pattern_pre, msg_text):
+                # If your Wurd24Scheduler expects uppercase "PRE 1" tokens:
+                norm = msg_text.replace("pre", "PRE").upper()  # -> "PRE 1"
+                # If instead your scheduler expects negative "week -3/-2/-1",
+                # you can convert here instead (uncomment if needed):
+                # n = int(re.search(r"\d", msg_text).group(0))   # 1..3
+                # week_map = {1: -3, 2: -2, 3: -1}
+                # norm = f"week {week_map[n]}"
+
+            week_schedule = wrd.wurd_sched_main(norm)
             if TEST:
-                # TEMP await create_channel() *******************************************************************
-                # guild = bot.get_guild(GUILD_ID)
-                # await delete_category_channels(guild)  # First, delete existing channels in the category
-                # await create_user_user_channels(guild)  # Create channels for user-user teams
                 print(f'--------TEST PRINT--------------\n{week_schedule}\n------------TEST PRINT---------')
             else:
-                #             schedule forum ID                                advance forum ID
+                # schedule forum ID (for 'all')  vs  advance forum ID (for a single week/pre)
                 channel_id = 1290487933131952138 if 'all' in msg_text else 1149401984466681856
                 channel = bot.get_channel(channel_id)
 
-                # Split the week_schedule into chunks and send each one
                 for chunk in split_message(week_schedule):
-                    await channel.send(chunk)  # Send each chunk separately
+                    await channel.send(chunk)
 
-                if 'week' in msg_text:
+                # For both 'week N' *and* 'pre N', build the game forums
+                if any(k in msg_text for k in ("week", "pre")):
                     guild = bot.get_guild(GUILD_ID)
-                    await delete_category_channels(guild)  # First, delete existing channels in the category
-                    channel_activity_tracker.clear()  # clear channel_activity_tracker for new week
-                    await create_user_user_channels(guild)  # Create channels for user-user teams
+                    await delete_category_channels(guild)  # clear previous week’s forums
+                    channel_activity_tracker.clear()
+                    await create_user_user_channels(guild)  # create new matchup forums
 
     # Regex search for time patterns in the message
     player_msg_time = re.search(r'\d{1,2}:\d{2}', msg.content)

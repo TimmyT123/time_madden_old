@@ -181,6 +181,72 @@ _current_pairs: list[tuple[str, str]] = []
 
 TEAM_NAME_RE = r"[A-Z][A-Za-z ]+"  # simple, forgiving
 
+def _canon_team_upper(s: str) -> str | None:
+    t = extract_team_from_nick(s or "")
+    return t if t else None
+
+def _load_nfl_title_and_upper():
+    with open('NFL_Teams.csv', 'r', encoding='utf-8') as f:
+        titles = [ln.strip() for ln in f if ln.strip()]
+    uppers = {t.upper(): t for t in titles}
+    return titles, uppers
+
+def _scan_guild_for_team_claims(guild):
+    """Return (claims, conflicts, unknowns)
+       claims: dict[TEAM_UPPER] -> list[member]
+       conflicts: subset of claims where more than one member matches the same team
+       unknowns: members whose name looks like a team but isn't in NFL_Teams.csv
+    """
+    titles, upper_map = _load_nfl_title_and_upper()
+    claims = {}
+    unknowns = []
+    for m in guild.members:
+        if getattr(m, "bot", False):
+            continue
+        team_up = _canon_team_upper(m.display_name or m.name)
+        if not team_up:
+            continue
+        if team_up in upper_map:
+            claims.setdefault(team_up, []).append(m)
+        else:
+            unknowns.append((m, team_up))
+    conflicts = {t: members for t, members in claims.items() if len(members) > 1}
+    return claims, conflicts, unknowns, upper_map
+
+def _format_audit_report(guild, claims, conflicts, unknowns, upper_map):
+    total_claimed = len(claims)
+    unique_members = sum(len(v) for v in claims.values())
+    taken_titles = sorted(upper_map[t] for t in claims.keys())
+    lines = []
+    lines.append(f"**WURD users → teams audit for {guild.name}**")
+    lines.append(f"Claimed teams: {total_claimed} | Claiming members: {unique_members}")
+    if conflicts:
+        lines.append("")
+        lines.append("__Conflicts (multiple members claiming same team)__")
+        for t, members in sorted(conflicts.items(), key=lambda x: upper_map[x[0]]):
+            who = ", ".join(f"{m.display_name} ({m.id})" for m in members)
+            lines.append(f"- {upper_map[t]}: {who}")
+    else:
+        lines.append("")
+        lines.append("No conflicts detected ✅")
+
+    if unknowns:
+        lines.append("")
+        lines.append("__Unknown team-like prefixes (not in NFL_Teams.csv)__")
+        for m, t in unknowns:
+            lines.append(f"- {m.display_name} ({m.id}) → “{t}”")
+    else:
+        lines.append("")
+        lines.append("No unknown/invalid team prefixes detected ✅")
+
+    lines.append("")
+    lines.append("__Teams currently considered taken__")
+    for tt in taken_titles:
+        lines.append(f"- {tt}")
+
+    return "\n".join(lines)
+
+
 # --- Preseason support ---
 # Internally: PRE 1 -> week = -3, PRE 2 -> -2, PRE 3 -> -1
 def _pre_to_week(n: int) -> int:
@@ -579,6 +645,46 @@ async def watch_first_link_and_edit(thread, author_id: int, posted_msg_id: int, 
         pass
     except Exception as e:
         logger.warning(f"late-link watcher: {e}")
+
+
+@bot.command(name="check_users")
+@commands.has_role(ADMIN_ROLE_NAME)
+async def check_users(ctx):
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return await ctx.reply("Guild not found.")
+    claims, conflicts, unknowns, upper_map = _scan_guild_for_team_claims(guild)
+    report = _format_audit_report(guild, claims, conflicts, unknowns, upper_map)
+
+    # DM you the report, don’t spam channels
+    try:
+        await ctx.author.send(report)
+        await ctx.reply("Audit sent to your DMs.")
+    except:
+        await ctx.reply(report)
+
+@bot.command(name="rebuild_users")
+@commands.has_role(ADMIN_ROLE_NAME)
+async def rebuild_users(ctx):
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return await ctx.reply("Guild not found.")
+    claims, conflicts, unknowns, upper_map = _scan_guild_for_team_claims(guild)
+
+    # Write Title Case team names to wurd24users.csv
+    titles = [upper_map[t] for t in sorted(claims.keys())]
+    with open('wurd24users.csv', 'w', encoding='utf-8', newline='') as f:
+        for t in titles:
+            f.write(t + '\n')
+
+    report = _format_audit_report(guild, claims, conflicts, unknowns, upper_map)
+    try:
+        await ctx.author.send("`wurd24users.csv` regenerated.\n\n" + report)
+        await ctx.reply("Regenerated `wurd24users.csv` and DM’d you the summary.")
+    except:
+        await ctx.reply("`wurd24users.csv` regenerated.\n\n" + report)
+
+
 
 # The trigger: on_thread_create (new block)
 @bot.event

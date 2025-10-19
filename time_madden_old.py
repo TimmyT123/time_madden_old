@@ -1429,43 +1429,55 @@ def split_message(message, max_length=2000):
 
 
 # Function to check members in a specific channel and save nicknames matching NFL teams
+from pathlib import Path
+
 def nicknames_to_users_file():
     """
-    Mark a team as 'taken' if a member's display name STARTS WITH the exact
-    team name from NFL_Teams.csv (case-insensitive). Writes Title-Case names.
+    Scan the whole guild and write wurd24users.csv with user-controlled teams.
+    Exact "starts-with" match against NFL_Teams.csv entries (title case kept).
+    Writes to the project directory (next to this .py).
     """
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
-        logger.error(f"Guild {GUILD_ID} not found.")
+        logger.error(f"Guild {GUILD_ID} not found. Not writing wurd24users.csv.")
         return
 
-    # Load official team list exactly as written in CSV (Title Case)
+    # resolve output to project directory
+    base_dir = Path(__file__).resolve().parent
+    out_path = base_dir / "wurd24users.csv"
+
+    # load canonical team names exactly as in NFL_Teams.csv (title case preserved)
     try:
-        with open('NFL_Teams.csv', 'r', encoding='utf-8') as f:
-            teams = [ln.strip() for ln in f if ln.strip()]
+        with open(base_dir / 'NFL_Teams.csv', 'r', encoding='utf-8') as f:
+            teams_exact = [ln.strip() for ln in f if ln.strip()]
     except FileNotFoundError:
-        logger.error("NFL_Teams.csv not found.")
+        logger.error(f"NFL_Teams.csv not found at {base_dir}.")
         return
 
-    # Compile “starts with TEAM” regex per team (case-insensitive)
-    patterns = {t: re.compile(rf"^\s*{re.escape(t)}\b", re.IGNORECASE) for t in teams}
+    # precompute (UPPER, ORIGINAL) for quick startswith checks
+    lookup = [(t.upper(), t) for t in teams_exact]
 
-    taken = set()
+    taken_original_case = set()
+
     for m in guild.members:
         if getattr(m, "bot", False):
             continue
-        name = (m.display_name or m.name or "").strip()
-        for team, pat in patterns.items():
-            if pat.search(name):
-                taken.add(team)   # keep original Title Case from CSV
+        disp = (m.display_name or m.name or "").strip()
+        disp_up = disp.upper()
+        for up, original in lookup:
+            # exact “starts with team name”
+            if disp_up.startswith(up):
+                taken_original_case.add(original)
                 break
 
-    # Write results in Title Case exactly like the CSV
-    with open('wurd24users.csv', 'w', encoding='utf-8', newline='') as f:
-        for team in sorted(taken, key=str.lower):
-            f.write(team + '\n')
-
-    logger.info(f"wurd24users.csv updated with {len(taken)} user-controlled teams.")
+    # write result
+    try:
+        with open(out_path, 'w', encoding='utf-8', newline='') as f:
+            for t in sorted(taken_original_case):
+                f.write(t + '\n')
+        logger.info(f"wurd24users.csv updated with {len(taken_original_case)} team(s) at {out_path}")
+    except Exception as e:
+        logger.error(f"Failed writing {out_path}: {e}")
 
 
 

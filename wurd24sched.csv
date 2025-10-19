@@ -1,3 +1,54 @@
+PRE 1,
+Rams,Bills
+Jaguars,Bears
+Texans,Saints
+Browns,Falcons
+Commanders,Dragons
+Raiders,Cardinals
+Steelers,49ers
+Giants,Patriots
+Ravens,Lions
+Cowboys,Jets
+Bengals,Buccaneers
+Eagles,Dolphins
+Panthers,Chiefs
+Colts,Vikings
+Packers,Titans
+Seahawks,Broncos
+PRE 2,
+Jets,Falcons
+Dolphins,49ers
+Chiefs,Buccaneers
+Dragons,Packers
+Bengals,Bears
+Vikings,Raiders
+Titans,Seahawks
+Texans,Rams
+Ravens,Eagles
+Colts,Commanders
+Lions,Browns
+Jaguars,Giants
+Bills,Saints
+Steelers,Panthers
+Patriots,Cardinals
+Broncos,Cowboys
+PRE 3,
+Dragons,Rams
+Patriots,Eagles
+Ravens,49ers
+Bills,Commanders
+Titans,Buccaneers
+Browns,Giants
+Chiefs,Vikings
+Broncos,Cardinals
+Texans,Bears
+Steelers,Packers
+Jets,Seahawks
+Dolphins,Panthers
+Jaguars,Cowboys
+Colts,Falcons
+Bengals,Lions
+Raiders,Saints
 WEEK 1,
 Panthers,Lions
 Ravens,Titans

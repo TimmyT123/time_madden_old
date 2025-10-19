@@ -36,6 +36,8 @@ def check_all_teams_in_schedule(sched, NFL_Teams):
         i = i[:-1]
         if 'week' in i.lower() or len(i) < 3:
             continue
+        if 'pre' in i.lower():
+            continue
         new_teams = i.split(',')
         for team in new_teams:
             team = team + '\n'

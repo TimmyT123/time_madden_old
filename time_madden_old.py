@@ -646,22 +646,93 @@ async def watch_first_link_and_edit(thread, author_id: int, posted_msg_id: int, 
     except Exception as e:
         logger.warning(f"late-link watcher: {e}")
 
+def _leading_alnum_lower(s: str) -> str:
+    """Lowercased display name starting at the first letter/digit."""
+    s = s or ""
+    i = 0
+    while i < len(s) and not s[i].isalnum():
+        i += 1
+    return s[i:].casefold()
+
+def name_starts_with_team(display_name: str, team_name: str) -> bool:
+    """True if display_name starts with team_name (case-insensitive), ignoring leading symbols."""
+    return _leading_alnum_lower(display_name).startswith(team_name.strip().casefold())
+
+
 
 @bot.command(name="check_users")
 @commands.has_role(ADMIN_ROLE_NAME)
 async def check_users(ctx):
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return await ctx.reply("Guild not found.")
-    claims, conflicts, unknowns, upper_map = _scan_guild_for_team_claims(guild)
-    report = _format_audit_report(guild, claims, conflicts, unknowns, upper_map)
-
-    # DM you the report, don’t spam channels
+    # Load official team list exactly as in NFL_Teams.csv (Title Case)
     try:
-        await ctx.author.send(report)
-        await ctx.reply("Audit sent to your DMs.")
-    except:
-        await ctx.reply(report)
+        with open('NFL_Teams.csv', 'r', encoding='utf-8') as f:
+            official = [ln.strip() for ln in f if ln.strip()]
+    except FileNotFoundError:
+        await ctx.send("NFL_Teams.csv not found on the Pi.")
+        return
+
+    # Build case-insensitive lookup
+    teams_cf = [(t, t.casefold()) for t in official]
+
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        await ctx.send(f"Guild {GUILD_ID} not found.")
+        return
+
+    claimed_by_user = {}   # team -> member
+    unknown = []           # (member, preview)
+    for m in guild.members:
+        if getattr(m, "bot", False):
+            continue
+        disp = m.display_name or m.name or ""
+        lead = _leading_alnum_lower(disp)
+
+        found_team = None
+        for t_title, t_cf in teams_cf:
+            if lead.startswith(t_cf):
+                found_team = t_title
+                break
+
+        if found_team:
+            # first come wins; if you want to detect duplicates, keep a list per team
+            claimed_by_user.setdefault(found_team, m)
+        else:
+            # show the first token-ish for debugging
+            preview = (disp.strip().split(maxsplit=2)[0:2])
+            preview = " ".join(preview) if preview else disp.strip()[:12]
+            unknown.append((m, preview))
+
+    # Compose report
+    lines = []
+    lines.append(f"**WURD users → teams audit for {guild.name}**")
+    lines.append(f"Claimed teams: {len(claimed_by_user)} | Claiming members: {len(claimed_by_user)}")
+    lines.append("")
+    dupes = []  # populate if you change claimed_by_user to track multiples
+    if dupes:
+        lines.append("Conflicts detected ❗")
+        for team, members in dupes:
+            lines.append(f"- {team}: " + ", ".join(m.display_name for m in members))
+    else:
+        lines.append("No conflicts detected ✅")
+    lines.append("")
+
+    if unknown:
+        lines.append("__Unknown team-like names (don’t start with an official team)__")
+        for m, prev in unknown:
+            lines.append(f"- {m.display_name} ({m.id}) → “{prev}”")
+        lines.append("")
+
+    # Teams currently considered taken
+    taken = sorted(claimed_by_user.keys())
+    if taken:
+        lines.append("__Teams currently considered taken__")
+        for t in taken:
+            lines.append(f"- {t}")
+
+    report = "\n".join(lines)
+    for chunk in split_message(report):
+        await ctx.send(chunk)
+
 
 @bot.command(name="rebuild_users")
 @commands.has_role(ADMIN_ROLE_NAME)

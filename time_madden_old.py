@@ -719,6 +719,30 @@ AP_ALERT_CHANNEL_ID = int(os.getenv("AP_ALERT_CHANNEL_ID", "0"))
 AP_ALERT_TZ = os.getenv("AP_ALERT_TZ", "US/Arizona")
 
 
+AP_SIG_FILE = "data/ap_last_sig.json"
+os.makedirs("data", exist_ok=True)
+
+def _sig_to_str(sig_tuple: tuple) -> str:
+    # stable JSON string for comparison/persistence
+    # sig looks like: (("1234567890","2025-01-03","2025-01-10"), ...)
+    return json.dumps(sig_tuple, separators=(",", ":"))
+
+def _load_last_ap_sig_str() -> str:
+    try:
+        with open(AP_SIG_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""
+    except Exception:
+        return ""
+
+def _save_last_ap_sig_str(sig_str: str):
+    tmp = AP_SIG_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(sig_str)
+    os.replace(tmp, AP_SIG_FILE)
+
+
 def _parse_date(d: str) -> datetime:
     # Stored as YYYY-MM-DD (no time); treat as midnight UTC for comparisons
     return datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=dt_timezone.utc)
@@ -797,17 +821,22 @@ async def ap_autopost_watcher():
     """
     Periodically checks if the set of ACTIVE AP users has changed.
     If changed, post a fresh AP bulletin to the on-vacation forum.
+    Avoids posting at startup if nothing changed since last post.
     """
     interval = int(os.getenv("AP_AUTOPUBLISH_INTERVAL_SEC", "600"))  # default: 10 min
-    prev_sig = None
 
-    # Initial post shortly after startup
+    # Load last posted signature from disk (prevents repost on restart)
+    prev_sig_str = _load_last_ap_sig_str()
+
+    # Initial check shortly after startup
     await asyncio.sleep(5)
     try:
         curr_sig = _active_ap_signature()
-        if curr_sig != prev_sig:
+        curr_sig_str = _sig_to_str(curr_sig)
+        if curr_sig_str != prev_sig_str:
             await post_ap_bulletin(bot)
-            prev_sig = curr_sig
+            _save_last_ap_sig_str(curr_sig_str)
+            prev_sig_str = curr_sig_str
     except Exception as e:
         logger.warning(f"ap_autopost_watcher initial post: {e}")
 
@@ -815,9 +844,11 @@ async def ap_autopost_watcher():
     while True:
         try:
             curr_sig = _active_ap_signature()
-            if curr_sig != prev_sig:
+            curr_sig_str = _sig_to_str(curr_sig)
+            if curr_sig_str != prev_sig_str:
                 await post_ap_bulletin(bot)
-                prev_sig = curr_sig
+                _save_last_ap_sig_str(curr_sig_str)
+                prev_sig_str = curr_sig_str
         except Exception as e:
             logger.warning(f"ap_autopost_watcher: {e}")
 

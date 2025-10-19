@@ -215,6 +215,19 @@ def wurd_sched_main(WEEK):
 
     slice_str = "\n".join(lines[start:end])
 
+    # keep only header + matchup lines
+    lines = [ln.rstrip() for ln in slice_str.splitlines()]
+    out = []
+    for ln in lines:
+        if re.match(r'^\s*(WEEK\s+\d+|PRE\s+\d+)\s*$', ln, flags=re.IGNORECASE):
+            out.append(ln)
+        elif re.search(r'\bvs\b', ln, flags=re.IGNORECASE):
+            out.append(ln)
+    # optional: add @everyone at end (your code already handles this elsewhere; keep only if you want it here)
+    # out.append("@everyone")
+
+    slice_str = "\n".join(out).strip()
+
     # persist user–user pairings for forum creation
     user_user_games = get_user_user_games(slice_str)
     save_user_user_games(user_user_games)

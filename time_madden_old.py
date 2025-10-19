@@ -1259,7 +1259,6 @@ def nicknames_to_users_file():
         logger.error(f"Guild {GUILD_ID} not found.")
         return
 
-    # load canonical NFL team names (one per line)
     try:
         with open('NFL_Teams.csv', 'r', encoding='utf-8') as f:
             nfl_team_list = [ln.strip() for ln in f if ln.strip()]
@@ -1267,20 +1266,16 @@ def nicknames_to_users_file():
         logger.error("NFL_Teams.csv not found.")
         return
 
-    # Build a set of detected user-controlled teams using your helpers
-    controlled: set[str] = set()
+    nfl_set = {t.upper() for t in nfl_team_list}
+
+    controlled = set()
     for m in guild.members:
         if getattr(m, "bot", False):
             continue
         team = extract_team_from_nick(m.display_name or m.name or "")
-        if team:
+        if team and team in nfl_set:
             controlled.add(team)
 
-    # Keep only teams that are in NFL_Teams.csv
-    nfl_set = {t.upper() for t in nfl_team_list}
-    controlled = {t for t in controlled if t in nfl_set}
-
-    # Write deduped list
     with open('wurd24users.csv', 'w', encoding='utf-8', newline='') as f:
         for t in sorted(controlled):
             f.write(t + '\n')

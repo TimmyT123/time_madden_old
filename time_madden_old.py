@@ -1988,6 +1988,7 @@ async def on_ready():
 # Event to welcome new members to the server
 @bot.event
 async def on_member_join(member):
+    nicknames_to_users_file()  # make sure available teams is up-to-date
     channel = member.guild.system_channel  # Get the system channel
     if channel is not None:
         welcome_message = (

@@ -764,10 +764,6 @@ async def on_thread_create(thread: nextcord.Thread):
     if thread.parent_id != GAME_STREAMS_FORUM_ID:
         return
 
-    # 0) Do not create flyers during preseason
-    if _current_week is not None and _current_week < 1:
-        return
-
     # 1) Try to parse from title first (week may be None here)
     week, t1, t2 = parse_title_for_week_and_teams(thread.name or "")
 
@@ -2061,6 +2057,10 @@ async def on_message(msg):
     # --- Text-channel flyer trigger for game-streams ----------------------------
     try:
         if msg.guild and GAME_STREAMS_CHANNEL_ID and msg.channel.id == GAME_STREAMS_CHANNEL_ID:
+            # Prevent bot from responding to its own flyers
+            if msg.author == bot.user:
+                return
+
             link = find_stream_link(msg.content or "")
             if not link:
                 # nothing to do if there's no stream link

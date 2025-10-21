@@ -2072,10 +2072,6 @@ async def on_message(msg):
                 if not week and _current_week:
                     week = _current_week
 
-                # skip preseason entirely
-                if (week or 0) < 1:
-                    return
-
                 # 3) Fallback: "TEAM vs TEAM" in free text
                 if not (t1 and t2):
                     m = re.search(r"\b([A-Z][A-Z ]+?)\s*(?:vs|[-–])\s*([A-Z][A-Z ]+)\b", (msg.content or "").upper())

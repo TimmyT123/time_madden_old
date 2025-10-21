@@ -1965,6 +1965,24 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Error during bot startup: {e}")
 
+    # Restore last learned advance (survives reboot)
+    try:
+        st = _load_week_state()
+        wk = int(st.get("week", 0))
+        pairs = [tuple(x) for x in st.get("matchups", [])]
+        mapping = {}
+        for a, b in pairs:
+            mapping[a] = b
+            mapping[b] = a
+
+        global _current_week, _current_pairs, _current_matchups
+        _current_week = wk if wk != 0 else None
+        _current_pairs = pairs
+        _current_matchups = mapping
+        logger.info(f"Restored advance from file: WEEK={_current_week}, games={len(_current_pairs)}")
+    except Exception as e:
+        logger.warning(f"Could not restore advance state: {e}")
+
     # Start the AP reminder loop
     bot.loop.create_task(ap_return_reminder_loop())
 
@@ -2048,7 +2066,10 @@ async def on_message(msg):
                 _current_week = wk
                 _current_pairs = pairs
                 _current_matchups = mapping
-                logger.info(f"Advance learned: WEEK={wk}, games={len(pairs)}")
+
+                # ⬇️ persist to disk so it survives restarts
+                _save_week_state(wk, [[L, R] for (L, R) in pairs])
+                logger.info(f"Advance learned & saved: WEEK={wk}, games={len(pairs)}")
     except Exception as e:
         logger.warning(f"advance parse failed: {e}")
 

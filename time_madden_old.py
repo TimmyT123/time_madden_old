@@ -2240,7 +2240,8 @@ async def on_message(msg):
 
             # IF TEST IS TRUE THEN WE PRINT SCHEDULE WITHOUT POSTING IT
             if TEST:
-                print(f'--------TEST PRINT--------------\n{week_schedule}\n------------TEST PRINT---------')
+                logger.info("--------TEST PRINT--------------\n%s\n------------TEST PRINT---------", week_schedule)
+                return  # Prevent it from posting to Discord
             else:
                 # schedule forum ID (for 'all')  vs  advance forum ID (for a single week/pre)
                 channel_id = 1290487933131952138 if 'all' in msg_text else 1149401984466681856

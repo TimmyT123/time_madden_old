@@ -2247,6 +2247,25 @@ async def on_message(msg):
                 channel_id = 1290487933131952138 if 'all' in msg_text else 1149401984466681856
                 channel = bot.get_channel(channel_id)
 
+                def format_schedule_for_discord(raw_text: str) -> str:
+                    formatted_lines = []
+                    for line in raw_text.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.upper().startswith("PRE") or line.upper().startswith("WEEK"):
+                            # Add section headers with emojis and lines
+                            formatted_lines.append(f"\n🏈 **{line.upper()}**\n────────────────────")
+                        else:
+                            # Add emoji for each game or bye line
+                            if "BYE" in line:
+                                formatted_lines.append(f" {line}")
+                            else:
+                                formatted_lines.append(f" {line}")
+                    return "\n".join(formatted_lines)
+
+                week_schedule = format_schedule_for_discord(week_schedule)
+
                 first = True
                 for chunk in split_message(week_schedule):
                     if first and ('all' not in msg_text):  # only ping on advance, not the full-season schedule

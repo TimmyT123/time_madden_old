@@ -2237,6 +2237,8 @@ async def on_message(msg):
                 # norm = f"week {week_map[n]}"
 
             week_schedule = wrd.wurd_sched_main(norm)
+
+            # IF TEST IS TRUE THEN WE PRINT SCHEDULE WITHOUT POSTING IT
             if TEST:
                 print(f'--------TEST PRINT--------------\n{week_schedule}\n------------TEST PRINT---------')
             else:
@@ -2244,8 +2246,13 @@ async def on_message(msg):
                 channel_id = 1290487933131952138 if 'all' in msg_text else 1149401984466681856
                 channel = bot.get_channel(channel_id)
 
+                first = True
                 for chunk in split_message(week_schedule):
-                    await channel.send(chunk)
+                    if first and ('all' not in msg_text):  # only ping on advance, not the full-season schedule
+                        await channel.send(f"@everyone\n{chunk}", allowed_mentions=EVERYONE_MENTIONS)
+                        first = False
+                    else:
+                        await channel.send(chunk, allowed_mentions=AllowedMentions.none())
 
                 # For both 'week N' *and* 'pre N', build the game forums
                 if any(k in msg_text for k in ("week", "pre")):

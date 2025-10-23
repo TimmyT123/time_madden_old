@@ -181,6 +181,126 @@ _current_pairs: list[tuple[str, str]] = []
 
 TEAM_NAME_RE = r"[A-Z][A-Za-z ]+"  # simple, forgiving
 
+# === PLAYTIME: storage & helpers =============================================
+PLAYTIME_FILE = "data/playtime.json"
+os.makedirs("data", exist_ok=True)
+
+def _load_playtime_map() -> dict[str, str]:
+    try:
+        with open(PLAYTIME_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # normalize keys to string
+            return {str(k): str(v) for k, v in data.items()}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+def _save_playtime_map(d: dict[str, str]) -> None:
+    tmp = PLAYTIME_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, PLAYTIME_FILE)
+
+MENTION_TOKENS_RE = re.compile(
+    r"(?:<@!?\d+>|<@&\d+>|@everyone|@here)",  # user, role, mass mentions
+    flags=re.IGNORECASE,
+)
+
+def sanitize_playtime_text(raw: str) -> str:
+    """
+    Remove Discord mention tokens and trim whitespace.
+    Keeps everything else verbatim (times, days, emojis, punctuation).
+    """
+    if not raw:
+        return ""
+    txt = MENTION_TOKENS_RE.sub("", raw)
+    # collapse accidental double spaces left by removals
+    txt = re.sub(r"\s{2,}", " ", txt).strip()
+    # guardrail: avoid empty string after stripping mentions
+    return txt if txt else "(no details provided)"
+
+def get_playtime(user_id: int | str) -> str | None:
+    d = _load_playtime_map()
+    return d.get(str(user_id))
+
+def set_playtime(user_id: int | str, text: str) -> str:
+    d = _load_playtime_map()
+    d[str(user_id)] = text
+    _save_playtime_map(d)
+    return text
+
+async def _find_availability_message(channel: nextcord.TextChannel) -> nextcord.Message | None:
+    """
+    Look back a bit for our board message so we can edit it in place.
+    """
+    try:
+        async for m in channel.history(limit=50, oldest_first=False):
+            if m.author.id == channel.guild.me.id and (m.content or "").startswith("📅 Availability"):
+                return m
+    except Exception:
+        pass
+    return None
+
+def _availability_panel_lines(guild: nextcord.Guild, member_ids: list[int]) -> list[str]:
+    """
+    Build 2-3 clean lines showing each user and their latest availability text.
+    """
+    lines = ["📅 Availability (auto-updating)"]
+    for uid in member_ids:
+        m = guild.get_member(uid)
+        disp = (m.display_name if m else f"User {uid}")
+        txt = get_playtime(uid) or "— not set —"
+        lines.append(f"• **{disp}**: {txt}")
+    return lines
+
+async def _ensure_or_update_availability_board(channel: nextcord.TextChannel) -> None:
+    """
+    Create or update the '📅 Availability' message for this matchup channel.
+    Uses channel_activity_tracker[channel.id]['member_ids'] to show both players.
+    """
+    try:
+        tracker = channel_activity_tracker.get(channel.id)
+        if not tracker or not tracker.get("member_ids"):
+            return
+
+        lines = _availability_panel_lines(channel.guild, tracker["member_ids"])
+        content = "\n".join(lines)
+
+        board = await _find_availability_message(channel)
+        if board:
+            await board.edit(content=content, allowed_mentions=AllowedMentions.none())
+        else:
+            msg = await channel.send(content, allowed_mentions=AllowedMentions.none())
+            # Try to keep it near the top with a pin (best-effort)
+            try:
+                await msg.pin()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"availability board update failed in #{getattr(channel, 'name', '?')}: {e}")
+
+async def _update_user_matchup_boards(user: nextcord.Member | nextcord.User) -> int:
+    """
+    After a user runs !playtime, update every matchup channel they are part of.
+    Returns number of channels updated.
+    """
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return 0
+    category = guild.get_channel(CATEGORY_ID)
+    if not category or not isinstance(category, nextcord.CategoryChannel):
+        return 0
+
+    updated = 0
+    for ch in category.text_channels:
+        tracker = channel_activity_tracker.get(ch.id)
+        if tracker and user.id in tracker.get("member_ids", []):
+            await _ensure_or_update_availability_board(ch)
+            updated += 1
+    return updated
+# === END PLAYTIME helpers ======================================================
+
 def _canon_team_upper(s: str) -> str | None:
     t = extract_team_from_nick(s or "")
     return t if t else None
@@ -1319,6 +1439,13 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
 
             await channel.send(message_content)
 
+            # === PLAYTIME: seed or update the availability board for this matchup
+            try:
+                await _ensure_or_update_availability_board(channel)
+            except Exception as e:
+                logger.warning(f"could not seed availability board for {channel.name}: {e}")
+
+
             logger.info(f"Channel '{channel.name}' created successfully in category '{category.name}'.")
         except nextcord.Forbidden:
             logger.error("Bot does not have permission to create channels.")
@@ -1556,6 +1683,52 @@ async def available_teams(ctx):
     for chunk in split_message(teams_message):
         await ctx.send(chunk)
 
+@bot.command(name="playtime")
+async def playtime_cmd(ctx, *, availability: str = ""):
+    """
+    Usage (anywhere or in DM):
+      !playtime I work M-F 9AM - 5PM and weekends I'm available anytime
+
+    - Strips mentions automatically.
+    - Saves your text.
+    - Updates the matchup forum(s) you’re in to show both players’ availability.
+    """
+    try:
+        clean = sanitize_playtime_text(availability)
+        if not clean:
+            await ctx.reply("Please include a short note after `!playtime` (e.g., `!playtime Weeknights after 7pm, weekends open`).")
+            return
+
+        # persist
+        set_playtime(ctx.author.id, clean)
+
+        # acknowledge privately unless they said it in a matchup channel
+        ack = f"Saved your playtime:\n> {clean}"
+        try:
+            await ctx.author.send(ack)
+            # If they invoked in-guild, give a tiny heads-up
+            if ctx.guild:
+                await ctx.reply("Got it — I DM’d you a confirmation and updated your matchup forum(s).", mention_author=False)
+        except Exception:
+            # fallback to replying in place if we can’t DM
+            await ctx.reply(ack, allowed_mentions=AllowedMentions.none())
+
+        # update any relevant matchup channels for this user
+        updated = await _update_user_matchup_boards(ctx.author)
+        if updated == 0 and ctx.guild:
+            # If invoked in a specific matchup channel, try to update that one at least.
+            try:
+                if ctx.channel and isinstance(ctx.channel, nextcord.TextChannel):
+                    await _ensure_or_update_availability_board(ctx.channel)
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.error(f"!playtime failed: {e}")
+        try:
+            await ctx.reply("Sorry — couldn’t save your playtime just now.")
+        except Exception:
+            pass
 
 def is_exact_word(msg_text, word):
     """

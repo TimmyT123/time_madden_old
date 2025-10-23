@@ -400,10 +400,27 @@ def canonical_team(s: str) -> str:
     return aliases.get(s, s)
 
 def extract_team_from_nick(nick: str) -> str | None:
+    """
+    Return a canonical TEAM (ALL CAPS) if the nickname starts with an official team
+    name (Title Case in NFL_Teams.csv), ignoring leading symbols/digits/emoji.
+    """
     if not nick:
         return None
-    m = re.match(r"^([A-Z0-9][A-Z0-9 ]+)\b", nick.strip())
-    return canonical_team(m.group(1)) if m else None
+
+    # normalize: drop leading non-alnum, then casefold for robust comparison
+    lead = _leading_alnum_lower(nick)
+
+    try:
+        titles, upper_map = _load_nfl_title_and_upper()  # Title Case list + UPPER->Title map
+    except Exception:
+        return None
+
+    # Find the first official team whose name is a prefix of the nickname
+    for title in titles:                  # e.g., "Raiders"
+        if lead.startswith(title.casefold()):
+            return title.upper()          # -> "RAIDERS"
+
+    return None
 
 # put this near TITLE_RE (or replace TITLE_RE with this teams-only regex)
 TEAMS_IN_TITLE_RE = re.compile(
@@ -2255,7 +2272,7 @@ async def on_message(msg):
                             continue
                         if line.upper().startswith("PRE") or line.upper().startswith("WEEK"):
                             # Add section headers with emojis and lines
-                            formatted_lines.append(f"\n🏈 **{line.upper()}**\n────────────────────")
+                            formatted_lines.append(f"\n🏈  **{line.upper()}**\n────────────────────")
                         else:
                             # Add emoji for each game or bye line
                             if "BYE" in line:

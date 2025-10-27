@@ -1527,7 +1527,7 @@ async def check_inactivity():
 # Create channels for each user-user team with member invites
 async def create_user_user_channels(guild):
     # 🔄 Load the latest AP file before creating any new channels
-    ap_list = load_ap_users()
+    # ap_list = load_ap_users()
 
     user_user_teams = load_user_user_teams()
     for team_name in user_user_teams:
@@ -1539,7 +1539,7 @@ async def create_user_user_channels(guild):
             team_name=team_name,
             member_ids=member_ids,
             message_content=f"Welcome to the {team_name} channel!",
-            ap_list=ap_list)
+            )
 
 
 def get_time_zones():

@@ -1,0 +1,14 @@
+commanders-eagles
+vikings-packers
+seahawks-raiders
+chiefs-broncos
+bears-saints
+rams-49ers
+panthers-dragons
+cardinals-giants
+steelers-ravens
+jets-bills
+buccaneers-bengals
+patriots-dolphins
+titans-cowboys
+lions-falcons

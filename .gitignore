@@ -13,7 +13,6 @@ fresh_repo/
 *.wav
 *.epub
 save_state.json
-ap_users.json
 team_order_state.json
 stats.json
 session_data.csv

@@ -1772,10 +1772,29 @@ async def playtime_cmd(ctx, *, availability: str = ""):
         except Exception:
             pass
 
+
+def admin_or_authorized():
+    async def predicate(ctx: commands.Context) -> bool:
+        # DM: allow only if user is on the authorized list
+        if ctx.guild is None:
+            try:
+                return int(ctx.author.id) in AUTHORIZED_USERS
+            except Exception:
+                return False
+        # In-guild: Admin role OR authorized ID
+        is_admin_role = any(r.name == ADMIN_ROLE_NAME for r in ctx.author.roles)
+        is_authorized = False
+        try:
+            is_authorized = int(ctx.author.id) in AUTHORIZED_USERS
+        except Exception:
+            pass
+        return is_admin_role or is_authorized
+    return commands.check(predicate)
+
+
 @bot.command(name="seed_week")
-@commands.has_role(ADMIN_ROLE_NAME)
+@admin_or_authorized()
 async def seed_week(ctx, week: int):
-    """Admin: set current week and clear matchups (no posting)."""
     global _current_week, _current_pairs, _current_matchups
     _current_week = week
     _current_pairs = []
@@ -1784,12 +1803,8 @@ async def seed_week(ctx, week: int):
     await ctx.reply(f"Seeded week_state.json → WEEK {week} (no matchups).")
 
 @bot.command(name="seed_advance")
-@commands.has_role(ADMIN_ROLE_NAME)
+@admin_or_authorized()
 async def seed_advance(ctx, *, block: str):
-    """
-    Admin: paste the advance text block (same format you’d post),
-    but this only seeds state/file—no repost.
-    """
     wk, pairs, mapping = _parse_advance_block(block or "")
     if not wk or not pairs:
         return await ctx.reply("Couldn’t parse a week + matchups from your block.")

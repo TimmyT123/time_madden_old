@@ -1772,6 +1772,35 @@ async def playtime_cmd(ctx, *, availability: str = ""):
         except Exception:
             pass
 
+@bot.command(name="seed_week")
+@commands.has_role(ADMIN_ROLE_NAME)
+async def seed_week(ctx, week: int):
+    """Admin: set current week and clear matchups (no posting)."""
+    global _current_week, _current_pairs, _current_matchups
+    _current_week = week
+    _current_pairs = []
+    _current_matchups = {}
+    _save_week_state(week, [])
+    await ctx.reply(f"Seeded week_state.json → WEEK {week} (no matchups).")
+
+@bot.command(name="seed_advance")
+@commands.has_role(ADMIN_ROLE_NAME)
+async def seed_advance(ctx, *, block: str):
+    """
+    Admin: paste the advance text block (same format you’d post),
+    but this only seeds state/file—no repost.
+    """
+    wk, pairs, mapping = _parse_advance_block(block or "")
+    if not wk or not pairs:
+        return await ctx.reply("Couldn’t parse a week + matchups from your block.")
+    global _current_week, _current_pairs, _current_matchups
+    _current_week = wk
+    _current_pairs = pairs
+    _current_matchups = mapping
+    _save_week_state(wk, [[L, R] for (L, R) in pairs])
+    await ctx.reply(f"Seeded WEEK {wk} with {len(pairs)} matchups. No messages posted.")
+
+
 def is_exact_word(msg_text, word):
     """
     Checks if msg_text exactly matches the specified word.

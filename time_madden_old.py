@@ -1,5 +1,4 @@
-# This file automatically runs in time_madden.py on the raspberry pi under: sudo nano /etc/systemd/system/my_python_script.service
-# TODO IF NEW PLAYER THEN DELETE SCHEDULE AND POST NEW SCHEDULE IN SCHEDULE FORUM - MAKE SURE DELETE SCHEDULE FORUM IS APPLIED
+# This file is time_madden_old.py, dev on the windows laptop and automatically runs on the raspberrync
 #!/usr/bin/env python3
 
 import time
@@ -893,45 +892,80 @@ async def rebuild_users(ctx):
         await ctx.reply("`wurd24users.csv` regenerated.\n\n" + report)
 
 
+def prefer_learned_week(parsed_week: int | None) -> int | None:
+    """If we’ve learned a week from the advance, prefer it over any parsed/user week."""
+    return _current_week if _current_week is not None else parsed_week
+
+def order_by_advance(a: str, b: str) -> tuple[str, str]:
+    """
+    Return (L,R) in the exact left/right order from _current_pairs if possible,
+    otherwise return (a,b) unchanged.
+    """
+    if _current_pairs:
+        ab = {a, b}
+        for L, R in _current_pairs:
+            if {L, R} == ab:
+                return (L, R)
+    return (a, b)
+
+def normalize_matchup_with_learned(t1: str | None, t2: str | None, author=None) -> tuple[str | None, str | None]:
+    """
+    Use _current_matchups/_current_pairs to complete/override/validate the matchup.
+    Priority is the learned schedule:
+      - If only one team, fill opponent from _current_matchups
+      - If both teams but not a learned pair, force the correct opponent from mapping
+      - If nothing parsed, try author’s nickname -> team -> opponent
+      - Finally, enforce advance left/right order
+    """
+    t1 = canonical_team(t1) if t1 else None
+    t2 = canonical_team(t2) if t2 else None
+
+    if _current_matchups:
+        if t1 and not t2:
+            t2 = _current_matchups.get(t1)
+        elif t2 and not t1:
+            t1 = _current_matchups.get(t2)
+        elif t1 and t2:
+            # If user provided the wrong opponent, snap to the learned opponent
+            mapped = _current_matchups.get(t1)
+            if mapped and mapped != t2:
+                t2 = mapped
+
+        # If still missing both, try author nickname
+        if not (t1 and t2) and author:
+            author_team = extract_team_from_nick(getattr(author, "display_name", "") or "")
+            if author_team:
+                t1 = author_team
+                t2 = _current_matchups.get(author_team)
+
+    if t1 and t2:
+        t1, t2 = order_by_advance(t1, t2)
+    return t1, t2
+
 
 # The trigger: on_thread_create (new block)
 @bot.event
 async def on_thread_create(thread: nextcord.Thread):
-    # only in game-streams forum
     if thread.parent_id != GAME_STREAMS_FORUM_ID:
         return
 
-    # 1) Try to parse from title first (week may be None here)
-    week, t1, t2 = parse_title_for_week_and_teams(thread.name or "")
+    parsed_week, pt1, pt2 = parse_title_for_week_and_teams(thread.name or "")
 
-    # 2) Fall back to learned advance mapping + author's nickname
     try:
         author = await thread.guild.fetch_member(thread.owner_id)
     except Exception:
         author = None
 
-    if (not t1 or not t2) and _current_matchups and author:
-        author_team = extract_team_from_nick(getattr(author, "display_name", "") or "")
-        if author_team:
-            opp = _current_matchups.get(author_team)
-            if opp:
-                # Preserve left/right order from the advance list if we can
-                for L, R in _current_pairs:
-                    if {L, R} == {author_team, opp}:
-                        t1, t2 = L, R
-                        break
-                if not (t1 and t2):
-                    t1, t2 = author_team, opp
+    # ✅ Prefer learned week over user/title week
+    week = prefer_learned_week(parsed_week)
 
-    # 3) Normalize week: prefer parsed week, else use learned current week
-    if week is None and _current_week is not None:
-        week = _current_week
+    # ✅ Force teams to the learned mapping/order
+    t1, t2 = normalize_matchup_with_learned(pt1, pt2, author=author)
 
-    # 4) If we still don't have week or both teams, do nothing (no nag)
     if not week or not (t1 and t2):
         return
 
-    # 5) Eligibility: author must be one of teams unless Admin/Broadcaster
+    # eligibility unchanged...
     allowed = False
     if author:
         is_staff = any(r.name in (ADMIN_ROLE_NAME, "Broadcaster") for r in author.roles)
@@ -944,11 +978,9 @@ async def on_thread_create(thread: nextcord.Thread):
     if not allowed:
         return
 
-    # 6) De-dupe
     if registry_has(week, t1, t2):
         return
 
-    # 7) Starter message & link (best-effort)
     link = None
     try:
         parent = thread.parent
@@ -959,14 +991,17 @@ async def on_thread_create(thread: nextcord.Thread):
 
     streamer_display = getattr(author, "display_name", "Unknown")
 
-    # 8) Render & post flyer
     try:
-        flyer_path = render_flyer_png(week, *sorted_pair(t1, t2), streamer=streamer_display, link=link)
+        # ❌ was: render_flyer_png(week, *sorted_pair(t1, t2), ...)
+        flyer_path = render_flyer_png(week, t1, t2, streamer=streamer_display, link=link)
     except Exception as e:
         logger.error(f"flyer render failed: {e}")
         return
 
-    msg = await post_flyer_with_everyone(thread, flyer_path, week, *sorted_pair(t1, t2), streamer_display, link)
+    # ❌ was: post_flyer_with_everyone(..., *sorted_pair(t1, t2), ...)
+    msg = await post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer_display, link)
+
+    # Keep dedupe key sorted so A/B == B/A for registry only
     registry_put(week, t1, t2, {
         "thread_id": thread.id,
         "message_id": msg.id,
@@ -975,9 +1010,8 @@ async def on_thread_create(thread: nextcord.Thread):
         "ts": datetime.utcnow().isoformat()+"Z"
     })
 
-    # 9) Late-link watcher
     if not link and author:
-        bot.loop.create_task(watch_first_link_and_edit(thread, author.id, msg.id, week, *sorted_pair(t1, t2), streamer_display))
+        bot.loop.create_task(watch_first_link_and_edit(thread, author.id, msg.id, week, t1, t2, streamer_display))
 
 
 # Timezone explanation helper
@@ -2336,6 +2370,9 @@ async def on_message(msg):
                                     t1 = opp
 
                 # 5) Final guard: if we have both teams, render & post; else ask for a hint
+                week = prefer_learned_week(week)
+                t1, t2 = normalize_matchup_with_learned(t1, t2, author=msg.author)
+
                 if t1 and t2:
                     flyer_path = render_flyer_png(
                         week or 0, t1, t2,
@@ -2347,13 +2384,11 @@ async def on_message(msg):
                         week or 0, t1, t2,
                         msg.author.display_name, link
                     )
-                    # Registry uses a sorted key; this prevents duplicate flyers for same matchup.
+                    # Registry key stays order-agnostic
                     registry_put(week or 0, t1, t2, {"message_id": None})
                 else:
-                    logger.warning("The bot was not able to post the flyer in game-streams")
-                    # await msg.channel.send(
-                    #     "✅ I found your link, but the flyer is still a work in progress...\n"
-                    # )
+                    logger.warning("The bot was not able to post the flyer in game-streams (could not resolve matchup)")
+
     except Exception as e:
         logger.warning(f"game-streams text handler failed: {e}")
     # --- end text-channel flyer trigger -----------------------------------------

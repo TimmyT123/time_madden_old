@@ -249,7 +249,7 @@ def _availability_panel_lines(guild: nextcord.Guild, member_ids: list[int]) -> l
     for uid in member_ids:
         m = guild.get_member(uid)
         disp = (m.display_name if m else f"User {uid}")
-        txt = get_playtime(uid) or "— not set —"
+        txt = get_playtime(uid) or "— not set —  Set by typing: !playtime <your availability message here>"
         lines.append(f"• **{disp}**: {txt}")
     return lines
 

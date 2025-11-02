@@ -513,10 +513,18 @@ def find_stream_link(text: str) -> str | None:
 
 def canonical_team(s: str) -> str:
     s = (s or "").upper().strip()
-    s = re.sub(r"[^A-Z ]+", "", s)  # remove punctuation
-    # simple alias examples
-    aliases = {"DAL":"COWBOYS","DALLAS":"COWBOYS","MIN":"VIKINGS","MINNESOTA":"VIKINGS","NYG":"GIANTS","GIANTS":"GIANTS"}
-    return aliases.get(s, s)
+    # keep digits (for 49ERS) but drop punctuation
+    s = re.sub(r"[^A-Z0-9 ]+", "", s)
+
+    # common aliases
+    aliases = {
+        "DAL": "COWBOYS", "DALLAS": "COWBOYS",
+        "MIN": "VIKINGS", "MINNESOTA": "VIKINGS",
+        "NYG": "GIANTS", "SF": "49ERS", "SAN FRANCISCO": "49ERS",
+        "NINERS": "49ERS"
+    }
+    s = aliases.get(s, s)
+    return s
 
 def extract_team_from_nick(nick: str) -> str | None:
     """
@@ -652,6 +660,9 @@ def _logo_path_for(team: str) -> str | None:
         os.path.join(LOGOS_DIR, f"{team}.png"),
         os.path.join(LOGOS_DIR, f"{team.title()}.png"),
         os.path.join(LOGOS_DIR, f"{team.capitalize()}.png"),
+        # extra safety for 49ers
+        os.path.join(LOGOS_DIR, "49ers.png"),
+        os.path.join(LOGOS_DIR, "49ERS.png"),
     ]
     for p in candidates:
         if os.path.isfile(p):

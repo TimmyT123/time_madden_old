@@ -2129,11 +2129,86 @@ def _render_forum(entries: list, forum_query: str, limit: int = DEFAULT_FORUM_LI
 
     return "\n".join(lines).rstrip()
 
+def _render_user(
+    entries: list,
+    user_query: str,
+    limit: int = DEFAULT_FORUM_LIMIT,
+    only_date: str | None = None
+) -> str:
+    """
+    Render log lines filtered by username / ID fragment across ALL forums.
+
+    - user_query can be part of the username (e.g., 'panthers') or a full ID.
+    - Looks only within DEFAULT_LOG_LOOKBACK_DAYS worth of log files.
+    """
+    tz_az = pytz.timezone('US/Arizona')
+    q = (user_query or "").strip().lower()
+    if not q:
+        return "No user query provided."
+
+    filtered = []
+
+    for e in entries:
+        dt = e.get("dt")
+
+        # Optional date filter (YYYY-MM-DD in AZ time)
+        if only_date:
+            if not dt:
+                continue
+            if dt.astimezone(tz_az).strftime("%Y-%m-%d") != only_date:
+                continue
+
+        uname = (e.get("username") or "").strip()
+        uid_raw = str(e.get("user_id") or "").strip()
+
+        # Match if query is in username or equals the numeric ID
+        if q in uname.lower() or q == uid_raw.lower():
+            filtered.append(e)
+
+    if not filtered:
+        msg = f"No messages found for user '{user_query}'"
+        if only_date:
+            msg += f" on {only_date}"
+        msg += f" in the last {DEFAULT_LOG_LOOKBACK_DAYS} day(s)."
+        return msg
+
+    # Sort by time and limit to last N
+    filtered.sort(key=lambda e: e.get("dt") or datetime.min.replace(tzinfo=tz_az))
+    if limit and limit > 0:
+        filtered = filtered[-limit:]
+
+    # Group by date for neat output
+    by_date = defaultdict(list)
+    for e in filtered:
+        if e.get("dt"):
+            dkey = e["dt"].astimezone(tz_az).date().strftime("%Y-%m-%d (%a)")
+        else:
+            dkey = "Unknown Date"
+        by_date[dkey].append(e)
+
+    lines = [f"__**User filter:**__ `{user_query}` — {len(filtered)} message(s)"]
+    if only_date:
+        lines[0] += f" on {only_date}"
+    lines.append("")
+
+    for dkey in sorted(by_date.keys()):
+        lines.append(f"**{dkey}**")
+        for e in by_date[dkey]:
+            dt = e.get("dt")
+            t = dt.astimezone(tz_az).strftime("%I:%M %p").lstrip("0") if dt else "??:??"
+            forum = e.get("forum") or "Unknown"
+            uname = (e.get("username") or "").strip()
+            msg = _sanitize_message((e.get("message") or "").strip()) or "(no content)"
+            lines.append(f"- **{t}** — #{forum} — {uname}: {msg}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
 
 @bot.command(name="logs")
 async def logs_cmd(ctx, *, rest: str = ""):
     """
-    View logs by date or by forum.
+    View logs by date, forum, or user.
 
     Usage:
       • !logs date=YYYY-MM-DD [here]
@@ -2141,30 +2216,38 @@ async def logs_cmd(ctx, *, rest: str = ""):
       • !logs bills-panthers            # shorthand for forum=
       • !logs bills-panthers here
       • !logs forum="bills panthers"    # spaces ok if quoted
+      • !logs user=panthers [limit=50] [date=YYYY-MM-DD] [here]
 
     Notes:
       - Replies by DM unless you add 'here'.
       - Looks back DEFAULT_LOG_LOOKBACK_DAYS across bot.log files.
       - Limit defaults to DEFAULT_FORUM_LIMIT (env overridable).
     """
+
     author = ctx.author
     text = (rest or "").strip()
 
-    # --- parse 'here' flag first ---
-    want_here = bool(re.search(r'(^|\s)here($|\s)', text, flags=re.IGNORECASE))
-    text = re.sub(r'(^|\s)here($|\s)', ' ', text, flags=re.IGNORECASE).strip()
+    # detect and strip the 'here' flag (so it doesn't pollute forum/user names)
+    want_here = bool(re.search(r'\bhere\b', text, flags=re.IGNORECASE))
+    if want_here:
+        text = re.sub(r'\bhere\b', '', text, flags=re.IGNORECASE).strip()
 
     # --- parse args ---
-    m_date   = re.search(r'date\s*=\s*(\d{4}-\d{2}-\d{2})', text, flags=re.IGNORECASE)
-    m_forum  = re.search(r'forum\s*=\s*("?)(.+?)\1($|\s)', text, flags=re.IGNORECASE)  # supports forum="bills panthers"
-    m_limit  = re.search(r'limit\s*=\s*(\d{1,4})', text, flags=re.IGNORECASE)
+    m_date = re.search(r'date\s*=\s*(\d{4}-\d{2}-\d{2})', text, flags=re.IGNORECASE)
+    m_forum = re.search(r'forum\s*=\s*("?)(.+?)\1($|\s)', text, flags=re.IGNORECASE)  # supports forum="bills panthers"
+    m_limit = re.search(r'limit\s*=\s*(\d{1,4})', text, flags=re.IGNORECASE)
+    m_user = re.search(r'user\s*=\s*("?)(.+?)\1($|\s)', text, flags=re.IGNORECASE)
 
     only_date = m_date.group(1) if m_date else None
     limit = int(m_limit.group(1)) if m_limit else DEFAULT_FORUM_LIMIT
 
     forum_query = None
+    user_query = None
+
     if m_forum:
         forum_query = m_forum.group(2).strip()
+    elif m_user:
+        user_query = m_user.group(2).strip()
     else:
         # if user typed a bare token and NOT a pure date usage, treat it as forum shorthand
         # (e.g., "!logs bills-panthers")
@@ -2200,10 +2283,26 @@ async def logs_cmd(ctx, *, rest: str = ""):
             header += f" — {only_date}"
         body = _render_forum(entries, forum_query=forum_query, limit=limit, only_date=only_date)
         chunks = [header] + split_message(body)
+
+    elif user_query:
+        # User mode
+        header = f"**bot.log — user: {user_query}**"
+        if only_date:
+            header += f" — {only_date}"
+        body = _render_user(entries, user_query=user_query, limit=limit, only_date=only_date)
+        chunks = [header] + split_message(body)
+
     else:
         # Date mode (original behavior)
         if not only_date:
-            usage = "Usage:\n  `!logs date=YYYY-MM-DD`\nOR\n  `!logs forum=NAME [limit=N] [date=YYYY-MM-DD]`"
+            usage = (
+                "Usage:\n"
+                "  `!logs date=YYYY-MM-DD`\n"
+                "OR\n"
+                "  `!logs forum=NAME [limit=N] [date=YYYY-MM-DD]`\n"
+                "OR\n"
+                "  `!logs user=NAME [limit=N] [date=YYYY-MM-DD]`"
+            )
             try:
                 if ctx.guild and not want_here:
                     await author.send(usage)

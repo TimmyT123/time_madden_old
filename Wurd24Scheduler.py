@@ -185,7 +185,7 @@ def wurd_sched_main(WEEK):
 
     slice_str = "\n".join(lines[start:end])
 
-    # keep only header + matchup lines
+    # keep header + matchup lines + BYE lines
     lines = [ln.rstrip() for ln in slice_str.splitlines()]
     out = []
     for ln in lines:
@@ -193,8 +193,8 @@ def wurd_sched_main(WEEK):
             out.append(ln)
         elif re.search(r'\bvs\b', ln, flags=re.IGNORECASE):
             out.append(ln)
-    # optional: add @everyone at end (your code already handles this elsewhere; keep only if you want it here)
-    # out.append("@everyone")
+        elif re.search(r'\bbye\b', ln, flags=re.IGNORECASE):
+            out.append(ln)
 
     slice_str = "\n".join(out).strip()
 

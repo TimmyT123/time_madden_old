@@ -2468,83 +2468,63 @@ async def on_message(msg):
             if msg.author == bot.user:
                 return
 
-            link = find_stream_link(msg.content or "")
+            full_content = msg.content or ""
+            link = find_stream_link(full_content)
+
+            # ❌ If no link → do nothing
             if not link:
-                # nothing to do if there's no stream link
-                pass
-            else:
-                week, t1, t2 = parse_title_for_week_and_teams(msg.content or "")
-                if not week:
-                    week = parse_week_token(msg.content or "")
-                if not week and _current_week:
-                    week = _current_week
+                return
 
-                # 3) Fallback: "TEAM vs TEAM" in free text
-                if not (t1 and t2):
-                    m = re.search(r"\b([A-Z][A-Z ]+?)\s*(?:vs|[-–])\s*([A-Z][A-Z ]+)\b", (msg.content or "").upper())
-                    if m:
-                        t1, t2 = canonical_team(m.group(1)), canonical_team(m.group(2))
+            # ❌ If we don't have an advance learned, we can't build a matchup
+            if not _current_week or not _current_matchups:
+                logger.warning("game-streams: link posted but no advance/matchups are loaded yet.")
+                return
 
-                # 4) Still missing something? Use the author's nickname to infer their team,
-                #    then pull the opponent from the advance mapping we learned.
-                if _current_matchups and (not t1 or not t2):
-                    author_team = extract_team_from_nick(msg.author.display_name or "")
-                    if author_team:
-                        # If we have exactly one team, make sure it's aligned with the author's team
-                        if not t1 and not t2:
-                            # Neither found in text -> start from author
-                            opp = _current_matchups.get(author_team)
-                            if opp:
-                                # Preserve left/right as posted in the advance list if possible
-                                for L, R in _current_pairs:
-                                    if {L, R} == {author_team, opp}:
-                                        t1, t2 = L, R
-                                        break
-                                if not (t1 and t2):
-                                    t1, t2 = author_team, opp
-                        elif t1 and not t2:
-                            # We found t1 in text; if t1 == author, find their opponent
-                            opp = _current_matchups.get(t1) or _current_matchups.get(author_team)
-                            if opp:
-                                # Keep advance ordering if we can
-                                for L, R in _current_pairs:
-                                    if {L, R} == {t1, opp}:
-                                        t1, t2 = L, R
-                                        break
-                                if not (t1 and t2):
-                                    t2 = opp
-                        elif t2 and not t1:
-                            opp = _current_matchups.get(t2) or _current_matchups.get(author_team)
-                            if opp:
-                                for L, R in _current_pairs:
-                                    if {L, R} == {t2, opp}:
-                                        t1, t2 = L, R
-                                        break
-                                if not (t1 and t2):
-                                    t1 = opp
+            # ✅ Ignore ALL message text (before and after the link) for teams/week.
+            # We rely ONLY on:
+            #   - learned week (_current_week)
+            #   - learned matchups (_current_matchups/_current_pairs)
+            #   - author's nickname -> team
+            week = prefer_learned_week(None)
 
-                # 5) Final guard: if we have both teams, render & post; else ask for a hint
-                week = prefer_learned_week(week)
-                t1, t2 = normalize_matchup_with_learned(t1, t2, author=msg.author)
+            # Let normalize_matchup_with_learned use the author's nickname + mapping
+            t1, t2 = normalize_matchup_with_learned(None, None, author=msg.author)
 
-                if t1 and t2:
-                    flyer_path = render_flyer_png(
-                        week or 0, t1, t2,
-                        streamer=msg.author.display_name,
-                        link=link
-                    )
-                    await post_flyer_with_everyone(
-                        msg.channel, flyer_path,
-                        week or 0, t1, t2,
-                        msg.author.display_name, link
-                    )
-                    # Registry key stays order-agnostic
-                    registry_put(week or 0, t1, t2, {"message_id": None})
-                else:
-                    logger.warning("The bot was not able to post the flyer in game-streams (could not resolve matchup)")
+            if not (t1 and t2):
+                logger.warning(
+                    f"game-streams: could not resolve matchup from advance for author {msg.author.id} "
+                    f"({msg.author.display_name}); flyer not posted."
+                )
+                return
+
+            try:
+                flyer_path = render_flyer_png(
+                    week or 0,
+                    t1,
+                    t2,
+                    streamer=msg.author.display_name,
+                    link=link
+                )
+            except Exception as e:
+                logger.error(f"flyer render failed in game-streams: {e}")
+                return
+
+            await post_flyer_with_everyone(
+                msg.channel,
+                flyer_path,
+                week or 0,
+                t1,
+                t2,
+                msg.author.display_name,
+                link
+            )
+
+            # Registry key stays order-agnostic
+            registry_put(week or 0, t1, t2, {"message_id": None})
 
     except Exception as e:
         logger.warning(f"game-streams text handler failed: {e}")
+
     # --- end text-channel flyer trigger -----------------------------------------
 
 

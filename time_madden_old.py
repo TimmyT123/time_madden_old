@@ -2497,6 +2497,16 @@ async def on_message(msg):
                 )
                 return
 
+            # 🚫 DUPLICATE GUARD:
+            # If we already have a flyer for this WEEK + MATCHUP (thread or channel),
+            # do NOT post another one – even if they drop the link again later.
+            if registry_has(week or 0, t1, t2):
+                logger.info(
+                    f"game-streams: flyer already exists for week={week} {t1} vs {t2}, "
+                    f"ignoring repeated link from {msg.author.display_name}."
+                )
+                return
+
             try:
                 flyer_path = render_flyer_png(
                     week or 0,
@@ -2519,8 +2529,14 @@ async def on_message(msg):
                 link
             )
 
-            # Registry key stays order-agnostic
-            registry_put(week or 0, t1, t2, {"message_id": None})
+            # Registry key is order-agnostic (sorted inside flyer_key),
+            # so future attempts for this same week/game will be blocked.
+            registry_put(week or 0, t1, t2, {
+                "message_id": None,
+                "source": "game-streams-channel",
+                "author_id": getattr(msg.author, "id", 0),
+                "ts": datetime.utcnow().isoformat() + "Z"
+            })
 
     except Exception as e:
         logger.warning(f"game-streams text handler failed: {e}")

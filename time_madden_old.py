@@ -1135,13 +1135,9 @@ def _normalize_id(value) -> str | None:
     """
     if value is None:
         return None
-    s = str(value).strip()
-    try:
-        # int(...) tolerates leading/trailing spaces and leading zeros;
-        # We return canonical digits as a string.
-        return str(int(s))
-    except Exception:
-        return None
+        # Keep ONLY ASCII digits — no int() conversion!
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    return digits if digits else None
 
 def is_on_ap(user_id: int | str, ap_users=None):
     """

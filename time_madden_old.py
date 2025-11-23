@@ -1135,6 +1135,8 @@ def load_ap_users(force=False):
                 start_date = _start_date(u)
                 until_date = _date_from_str(u["until"])
                 if start_date <= today_local <= until_date:
+                    u = dict(u)
+                    u["user_id"] = _normalize_id(u.get("user_id"))
                     active.append(u)
             except Exception:
                 continue
@@ -1342,7 +1344,8 @@ async def ap_return_reminder_loop():
                 header = f"⚠️ AP return reminder for {tomorrow_local.strftime('%a, %b %d, %Y')}"
                 lines = [header, ""]
                 for u in due:
-                    key = (str(u.get("user_id")), u.get("until"))
+                    uid = _normalize_id(u.get("user_id")) or ""
+                    key = (uid, u.get("until"))
                     if key in notified:
                         continue  # already sent for this (user, date)
                     disp = u.get("display", f"User {u.get('user_id')}")
@@ -1371,7 +1374,8 @@ async def ap_return_reminder_loop():
 
                     if sent_ok:
                         for u in due:
-                            key = (str(u.get("user_id")), u.get("until"))
+                            uid = _normalize_id(u.get("user_id")) or ""
+                            key = (uid, u.get("until"))
                             notified.add(key)
                         _save_notified(notified)
         except Exception as e:

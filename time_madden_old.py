@@ -1066,6 +1066,10 @@ def get_timezone_offset_info(tz1_code, tz2_code, tz1_nick, tz2_nick):
 
 
 AP_FILE = 'ap_users.json'
+# --- AP auto-reload state ---
+_AP_MTIME = 0
+_AP_CACHE = None
+
 ON_VACATION_FORUM_ID = int(os.getenv("ON_VACATION_FORUM_ID", "0"))
 
 AP_NOTIFIED_FILE = 'ap_notified.json'
@@ -1102,31 +1106,45 @@ def _parse_date(d: str) -> datetime:
     # Stored as YYYY-MM-DD (no time); treat as midnight UTC for comparisons
     return datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=dt_timezone.utc)
 
-def load_ap_users():
+def load_ap_users(force=False):
     """
-    Return only entries that are 'active' *today* in the alert timezone:
-      - start <= today <= until
-    If 'start' is missing/invalid, treat as today (active immediately).
+    Load ap_users.json only when file changes.
+    Filters out inactive AP entries.
     """
-    tz = _tz(AP_ALERT_TZ)
-    today_local = datetime.now(tz).date()
+    global _AP_MTIME, _AP_CACHE
+
     try:
-        with open(AP_FILE, "r", encoding="utf-8") as f:
-            users = json.load(f)
+        mtime = os.path.getmtime(AP_FILE)
     except FileNotFoundError:
         return []
 
-    active = []
-    for u in users:
+    # Reload only if file changed OR force=True
+    if force or mtime != _AP_MTIME:
         try:
-            start_date = _start_date(u)                # new
-            until_date = _date_from_str(u["until"])   # existing helper
-            if start_date <= today_local <= until_date:
-                active.append(u)
+            with open(AP_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
         except Exception:
-            # skip malformed rows
-            continue
-    return active
+            return []
+
+        tz = _tz(AP_ALERT_TZ)
+        today_local = datetime.now(tz).date()
+
+        active = []
+        for u in raw:
+            try:
+                start_date = _start_date(u)
+                until_date = _date_from_str(u["until"])
+                if start_date <= today_local <= until_date:
+                    active.append(u)
+            except Exception:
+                continue
+
+        _AP_CACHE = active
+        _AP_MTIME = mtime
+        print(f"[AP] Reloaded ({len(active)} active entries).")
+
+    # return cached copy
+    return list(_AP_CACHE or [])
 
 def _normalize_id(value) -> str | None:
     """
@@ -1135,7 +1153,8 @@ def _normalize_id(value) -> str | None:
     """
     if value is None:
         return None
-        # Keep ONLY ASCII digits — no int() conversion!
+
+    # Keep ONLY ASCII digits — no int() conversion!
     digits = "".join(ch for ch in str(value) if ch.isdigit())
     return digits if digits else None
 
@@ -2344,6 +2363,7 @@ async def on_ready():
             print(f"Guild with ID {GUILD_ID} not found.")
             return
         logger.info(f'Logged in as {bot.user.name}')
+        load_ap_users(force=True)
     except Exception as e:
         logger.error(f"Error during bot startup: {e}")
 

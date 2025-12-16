@@ -1062,7 +1062,7 @@ def get_timezone_offset_info(tz1_code, tz2_code, tz1_nick, tz2_nick):
     tz2_time = time2.strftime('%I').lstrip('0') + time2.strftime(' %p')
 
     return f"**{tz1_code} is {abs(diff)} hour(s) {ahead_behind} {tz2_code}**\n" \
-           f"example:\n{tz1_nick:<24} is {tz1_time}\n{tz2_nick:<24} is {tz2_time}"
+           f"example:\n{tz1_nick:<24} is {tz1_time}\n{tz2_nick:<24} is {tz2_time}\n"
 
 
 AP_FILE = 'ap_users.json'
@@ -1492,6 +1492,9 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
                 await channel.send("\n".join(ap_notes))
             # === AP INSERT END ===
 
+            # channel welcome message
+            await channel.send(f"{message_content}\n")
+
             # Timezone difference logic (keep as-is)
             if len(member_info) == 2:
                 tz1_code = extract_timezone_code(member_info[0][1])
@@ -1501,13 +1504,14 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
                     if tz_msg:
                         await channel.send(tz_msg)
 
-            await channel.send(message_content)
-
             # === PLAYTIME: seed or update the availability board for this matchup
             try:
                 await _ensure_or_update_availability_board(channel)
             except Exception as e:
                 logger.warning(f"could not seed availability board for {channel.name}: {e}")
+
+            # 4️⃣ Reminder
+            await channel.send("\n**Reminder:** Please **@mention** your opponent — some users won’t see messages otherwise.\n")
 
 
             logger.info(f"Channel '{channel.name}' created successfully in category '{category.name}'.")

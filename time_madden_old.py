@@ -270,12 +270,8 @@ async def _ensure_or_update_availability_board(channel: nextcord.TextChannel) ->
         if board:
             await board.edit(content=content, allowed_mentions=AllowedMentions.none())
         else:
-            msg = await channel.send(content, allowed_mentions=AllowedMentions.none())
-            # Try to keep it near the top with a pin (best-effort)
-            try:
-                await msg.pin()
-            except Exception:
-                pass
+            await channel.send(content, allowed_mentions=AllowedMentions.none())
+
     except Exception as e:
         logger.warning(f"availability board update failed in #{getattr(channel, 'name', '?')}: {e}")
 
@@ -1493,7 +1489,8 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
             # === AP INSERT END ===
 
             # channel welcome message
-            await channel.send(f"{message_content}\n")
+            await channel.send(message_content)
+            await channel.send("\u200b")  # zero-width space
 
             # Timezone difference logic (keep as-is)
             if len(member_info) == 2:
@@ -1503,6 +1500,7 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
                     tz_msg = get_timezone_offset_info(tz1_code, tz2_code, member_info[0][1], member_info[1][1])
                     if tz_msg:
                         await channel.send(tz_msg)
+                        await channel.send("\u200b")  # zero-width space
 
             # === PLAYTIME: seed or update the availability board for this matchup
             try:
@@ -1511,8 +1509,7 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
                 logger.warning(f"could not seed availability board for {channel.name}: {e}")
 
             # 4️⃣ Reminder
-            await channel.send("\n**Reminder:** Please **@mention** your opponent — some users won’t see messages otherwise.\n")
-
+            await channel.send("**Reminder:** Please **@mention** your opponent — some users won’t see messages otherwise.")
 
             logger.info(f"Channel '{channel.name}' created successfully in category '{category.name}'.")
         except nextcord.Forbidden:

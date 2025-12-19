@@ -1508,6 +1508,8 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
             except Exception as e:
                 logger.warning(f"could not seed availability board for {channel.name}: {e}")
 
+            await channel.send("\u200b")  # zero-width space
+
             # 4️⃣ Reminder
             await channel.send("**Reminder:** Please **@mention** your opponent — some users won’t see messages otherwise.")
 

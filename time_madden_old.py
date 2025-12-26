@@ -156,7 +156,7 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # Link finder + nickname/team parsing (helpers)
 LINK_RE = re.compile(
-    r"(https?://(?:www\.)?(?:twitch\.tv/[A-Za-z0-9_/-]+|youtu\.be/[^\s>]+|youtube\.com/[^\s>]+))",
+    r"https?://[^\s<>]+",
     re.IGNORECASE
 )
 
@@ -1454,39 +1454,19 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
                 "responses": set()
             }
 
-            # === AP INSERT START ===
-            # Only @mention non-AP folks; add a CPU note for AP users.
-            ap_list = load_ap_users()  # uses helpers you’ll add above (load_ap_users, is_on_ap, human_date)
+            # === MENTIONS (TOP) ===
+            ap_list = load_ap_users()
             non_ap_mentions = []
-            ap_notes = []
 
-            # Build a quick lookup from member_id -> (mention, display)
-            id_to_info = {}
             for member_id in member_ids:
                 member = guild.get_member(member_id)
-                if member:
-                    mention = member.mention
-                    display = member.display_name or member.name
-                    id_to_info[member_id] = (mention, display)
-
-            for member_id in member_ids:
-                info = id_to_info.get(member_id)
-                if not info:
+                if not member:
                     continue
-                ap = is_on_ap(member_id, ap_list)
-                if ap:
-                    shown_name = ap.get("display", info[1])
-                    until = ap.get("until", "")
-                    note = f"Heads-up: {shown_name} is on **Auto-Pilot** until {human_date(until)}. Please play the CPU for this matchup."
-                    ap_notes.append(note)
-                else:
-                    non_ap_mentions.append(info[0])
+                if not is_on_ap(member_id, ap_list):
+                    non_ap_mentions.append(member.mention)
 
             if non_ap_mentions:
                 await channel.send(" ".join(non_ap_mentions))
-            if ap_notes:
-                await channel.send("\n".join(ap_notes))
-            # === AP INSERT END ===
 
             # channel welcome message
             await channel.send(message_content)
@@ -1512,6 +1492,32 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
 
             # 4️⃣ Reminder
             await channel.send("**Reminder:** Please **@mention** your opponent — some users won’t see messages otherwise.")
+
+            # === AP INSERT START ===
+            # spacer so AP notice stands alone
+            await channel.send("\u200b")
+
+            # === AP HEADS-UP (BOTTOM) ===
+            ap_notes = []
+
+            for member_id in member_ids:
+                member = guild.get_member(member_id)
+                if not member:
+                    continue
+
+                ap = is_on_ap(member_id, ap_list)
+                if ap:
+                    shown_name = ap.get("display", member.display_name)
+                    until = ap.get("until", "")
+                    ap_notes.append(
+                        f"🚨 **Heads-up:** {shown_name} is on **Auto-Pilot** until "
+                        f"**{human_date(until)}**.\n"
+                        f"➡️ Please play the **CPU** for this matchup."
+                    )
+
+            if ap_notes:
+                await channel.send("\n\n".join(ap_notes))
+            # === AP INSERT END ===
 
             logger.info(f"Channel '{channel.name}' created successfully in category '{category.name}'.")
         except nextcord.Forbidden:

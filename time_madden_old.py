@@ -711,7 +711,7 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
     return path
 
 def _noembed(url: str | None) -> str:
-    return f"<{url}>" if url else ""
+    return url or ""
 
 # Posting helper with @everyone (and pin)
 def _caption(week: int | None, t1: str, t2: str, streamer: str, link: str | None) -> str:

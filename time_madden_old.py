@@ -245,7 +245,7 @@ def _availability_panel_lines(guild: nextcord.Guild, member_ids: list[int]) -> l
     """
     Build 2-3 clean lines showing each user and their latest availability text.
     """
-    lines = ["📅 Availability- !playtime (auto-updating)"]
+    lines = ["📅 Availability Schedule — set with !playtime (auto-updating)"]
     for uid in member_ids:
         m = guild.get_member(uid)
         disp = (m.display_name if m else f"User {uid}")

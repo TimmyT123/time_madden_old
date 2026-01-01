@@ -2421,14 +2421,18 @@ async def on_member_join(member):
     channel = member.guild.system_channel  # Get the system channel
     if channel is not None:
         welcome_message = (
-            f"Welcome {member.mention} to WURD!!! :football:\n\n"
-            "Check out the https://discord.com/channels/1144688789248282804/1144692100697423972.\n"
-            "If you have any questions, just post in lobby-talk forum here and we'll be glad to answer.\n\n"
-            "Make sure you fill out the WURD application at -> https://wurd-madden.com/recruits/new\n\n"
-            "Communication is important! Tap on WURD :trophy: CHAMPIONSHIP and notifications will pop up.\n"
-            "Choose All Messages or Only @mentions\n\n"
-            "Real coaches are not allowed -- Choose Offensive, Defensive, or Development Coaches Only.\n\n"
-            "Let us know which team you would like to play for. :smiley:\n"
+            f"Welcome {member.mention} to WURD!!! :football::fire:\n\n"
+            "Please start by reviewing https://discord.com/channels/1144688789248282804/1144692100697423972.\n"
+            "If you have any questions, post in lobby-talk forum here and we'll be glad to answer.\n\n"
+            "Next step: Complete the WURD application :point_right: https://wurd-madden.com/recruits/new\n\n"
+            "Important: Communication matters here.\n"
+            "Make sure notifications are enabled for **WURD :trophy: CHAMPIONSHIP** (All Messages or @mentions).\n\n"
+            "Queue Process:\n"
+            "New users may start in the Queue while commissioners evaluate communication, availability, and readiness.\n"
+            "When a team opens — placement is based on preparedness, not order of arrival, at commissioner discretion.\n\n"
+            "Coaches:\n"
+            "Real-life coaches are not allowed. Choose Offensive, Defensive, or Development coaches only.\n\n"
+            "Let us know which team you’re interested in :smiley:\n"
         )
         teams_message = await get_available_teams_output()
         full_message = welcome_message + teams_message

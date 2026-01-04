@@ -710,12 +710,13 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
     canvas.convert("RGB").save(path, "PNG")
     return path
 
-def _noembed(url: str | None) -> str:
-    return url or ""
+def _safe_link(url: str | None) -> str:
+    if not url:
+        return "(link pending)"
+    return f"<{url}>"
 
-# Posting helper with @everyone (and pin)
 def _caption(week: int | None, t1: str, t2: str, streamer: str, link: str | None) -> str:
-    link_line = f"Live: {_noembed(link) or '(link pending)'}"
+    link_line = f"Live: {_safe_link(link)}"
     header = week_label(week).replace("WURD • ", "**") + "**"
     return (
         "@everyone\n"

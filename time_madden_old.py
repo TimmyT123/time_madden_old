@@ -17,6 +17,7 @@ import os
 import sys
 import asyncio
 import logging
+import requests
 
 from nextcord import File, AllowedMentions
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -121,6 +122,66 @@ TEAM_COLORS = {
 
 FLYER_REGISTRY = "data/flyers.json"  # de-dupe store
 os.makedirs(os.path.dirname(FLYER_OUT_DIR), exist_ok=True)
+
+#--------------chatgpt flyers--------------
+
+FLYER_API_BASE = "http://127.0.0.1:5000/api/flyer/game"
+
+def fetch_flyer_data(home_id: str, away_id: str):
+    try:
+        r = requests.get(
+            FLYER_API_BASE,
+            params={"home": home_id, "away": away_id},
+            timeout=5,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"[flyer] API error: {e}")
+        return None
+
+def build_flyer_caption(data: dict) -> str:
+    h = data["home"]
+    a = data["away"]
+
+    return (
+        f"🏈 **WURD Week {data['week']}**\n"
+        f"**{a['name']} ({a['record']}, OVR {a['ovr']})**\n"
+        f"vs\n"
+        f"**{h['name']} ({h['record']}, OVR {h['ovr']})**\n\n"
+        f"⭐ **Players to Watch**\n"
+        f"{a['name']}: {', '.join(p['name'] for p in a['top_players'])}\n"
+        f"{h['name']}: {', '.join(p['name'] for p in h['top_players'])}"
+    )
+
+def build_flyer_image_prompt(data: dict) -> str:
+    h = data["home"]
+    a = data["away"]
+
+    return f"""
+Create a cinematic Madden-style NFL game flyer.
+
+Matchup:
+{a['name']} ({a['record']}, OVR {a['ovr']})
+vs
+{h['name']} ({h['record']}, OVR {h['ovr']})
+
+Feature star players:
+{a['name']}: {", ".join(p['name'] + " (" + p['pos'] + ")" for p in a['top_players'])}
+{h['name']}: {", ".join(p['name'] + " (" + p['pos'] + ")" for p in h['top_players'])}
+
+Style requirements:
+- Night stadium
+- Dramatic lighting
+- Team colors emphasized
+- Realistic football players (not real NFL photos)
+- Madden-style broadcast look
+- High contrast
+- No real NFL logos
+"""
+
+
+
 
 # Add handlers to the logger
 logger.addHandler(console_handler)
@@ -999,6 +1060,35 @@ async def on_thread_create(thread: nextcord.Thread):
 
     streamer_display = getattr(author, "display_name", "Unknown")
 
+    TEAM_NAME_TO_ID = {
+        "RAIDERS": "774242332",
+        "PATRIOTS": "774242331",
+        # fill in once we wire to your existing mapping
+    }
+
+    home_id = TEAM_NAME_TO_ID.get(t1)
+    away_id = TEAM_NAME_TO_ID.get(t2)
+
+    flyer_data = (
+        fetch_flyer_data(home_id, away_id)
+        if home_id and away_id
+        else None
+    )
+
+    if flyer_data:
+        flyer_caption = build_flyer_caption(flyer_data)
+        flyer_prompt = build_flyer_image_prompt(flyer_data)
+    else:
+        flyer_caption = None
+        flyer_prompt = None
+
+    print("=== FLYER API DATA ===")
+    print(flyer_data)
+    print("=== FLYER CAPTION ===")
+    print(flyer_caption)
+    print("=== FLYER IMAGE PROMPT ===")
+    print(flyer_prompt)
+
     try:
         # ❌ was: render_flyer_png(week, *sorted_pair(t1, t2), ...)
         flyer_path = render_flyer_png(week, t1, t2, streamer=streamer_display, link=link)
@@ -1007,7 +1097,7 @@ async def on_thread_create(thread: nextcord.Thread):
         return
 
     # ❌ was: post_flyer_with_everyone(..., *sorted_pair(t1, t2), ...)
-    msg = await post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer_display, link)
+    #msg = await post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer_display, link)
 
     # Keep dedupe key sorted so A/B == B/A for registry only
     registry_put(week, t1, t2, {

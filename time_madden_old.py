@@ -85,6 +85,8 @@ LOGOS_DIR = os.getenv("LOGOS_DIR", "./static/logos")
 FLYER_OUT_DIR = os.getenv("FLYER_OUT_DIR", "./static/flyers")
 EVERYONE_MENTIONS = AllowedMentions(everyone=True, users=False, roles=False, replied_user=False)
 
+TEAM_NAME_TO_ID = {}
+
 TEAM_COLORS = {
     "CARDINALS":   ("#97233F", "#000000"),
     "FALCONS":     ("#A71930", "#000000"),
@@ -123,6 +125,29 @@ TEAM_COLORS = {
 FLYER_REGISTRY = "data/flyers.json"  # de-dupe store
 os.makedirs(os.path.dirname(FLYER_OUT_DIR), exist_ok=True)
 
+def load_team_id_mapping():
+    global TEAM_NAME_TO_ID
+    try:
+        resp = requests.get("http://127.0.0.1:5000/api/teams", timeout=5)
+        resp.raise_for_status()
+
+        teams = resp.json()
+        mapping = {}
+
+        for team in teams:
+            name = team.get("displayName")
+            team_id = team.get("teamId")
+
+            if name and team_id is not None:
+                mapping[name.upper()] = str(team_id)
+
+        TEAM_NAME_TO_ID = mapping
+        logger.info(f"Loaded {len(TEAM_NAME_TO_ID)} team ID mappings")
+
+    except Exception as e:
+        logger.error(f"Failed to load team ID mapping: {e}")
+        TEAM_NAME_TO_ID = {}
+
 #--------------chatgpt flyers--------------
 
 FLYER_API_BASE = "http://127.0.0.1:5000/api/flyer/game"
@@ -139,6 +164,34 @@ def fetch_flyer_data(home_id: str, away_id: str):
     except Exception as e:
         print(f"[flyer] API error: {e}")
         return None
+
+from openai import OpenAI
+import base64
+import io
+
+_openai_client = OpenAI()
+
+def generate_chatgpt_flyer_image(prompt: str, out_path: str) -> bool:
+    try:
+        result = _openai_client.images.generate(
+            model="gpt-image-1",
+            prompt=prompt,
+            size="1024x1024"
+        )
+
+        image_base64 = result.data[0].b64_json
+        image_bytes = base64.b64decode(image_base64)
+
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            img.save(out_path, format="PNG")
+
+        return os.path.isfile(out_path)
+
+    except Exception as e:
+        logger.warning(f"ChatGPT image generation failed: {e}")
+        return False
+
 
 def build_flyer_caption(data: dict) -> str:
     h = data["home"]
@@ -726,6 +779,49 @@ def _logo_path_for(team: str) -> str | None:
             return p
     return None
 
+def generate_flyer_with_fallback(
+    week: int,
+    t1: str,
+    t2: str,
+    streamer: str,
+    link: str | None,
+    flyer_prompt: str | None
+) -> tuple[str, str]:
+    """
+    Returns: (flyer_path, source) where source is 'AI' or 'STATIC'
+    """
+
+    # ---- TRY AI FIRST ----
+    if flyer_prompt:
+        try:
+            out_dir = os.path.join(FLYER_OUT_DIR, f"week_{week}")
+            os.makedirs(out_dir, exist_ok=True)
+            ai_path = os.path.join(out_dir, f"{t1}_vs_{t2}_ai.png")
+
+            ok = generate_chatgpt_flyer_image(
+                prompt=flyer_prompt,
+                out_path=ai_path
+            )
+
+            if ok and os.path.isfile(ai_path):
+                logger.info("Flyer image source: AI")
+                return ai_path, "AI"
+
+        except Exception as e:
+            logger.warning(f"AI flyer failed, falling back to static: {e}")
+
+    # ---- FALLBACK TO STATIC ----
+    static_path = render_flyer_png(
+        week,
+        t1,
+        t2,
+        streamer=streamer,
+        link=link
+    )
+
+    logger.info("Flyer image source: STATIC")
+    return static_path, "STATIC"
+
 def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str | None) -> str:
     W,H = 1280,720
     prim1, _ = TEAM_COLORS.get(team1, ("#333333","#777777"))
@@ -1060,11 +1156,11 @@ async def on_thread_create(thread: nextcord.Thread):
 
     streamer_display = getattr(author, "display_name", "Unknown")
 
-    TEAM_NAME_TO_ID = {
-        "RAIDERS": "774242332",
-        "PATRIOTS": "774242331",
-        # fill in once we wire to your existing mapping
-    }
+    # TEAM_NAME_TO_ID = {
+    #     "RAIDERS": "774242332",
+    #     "PATRIOTS": "774242331",
+    #     # fill in once we wire to your existing mapping
+    # }
 
     home_id = TEAM_NAME_TO_ID.get(t1)
     away_id = TEAM_NAME_TO_ID.get(t2)
@@ -1082,22 +1178,22 @@ async def on_thread_create(thread: nextcord.Thread):
         flyer_caption = None
         flyer_prompt = None
 
-    print("=== FLYER API DATA ===")
-    print(flyer_data)
-    print("=== FLYER CAPTION ===")
-    print(flyer_caption)
-    print("=== FLYER IMAGE PROMPT ===")
-    print(flyer_prompt)
+    logger.info("=== FLYER API DATA ===")
+    logger.info(json.dumps(flyer_data, indent=2))
+    logger.info("=== FLYER IMAGE PROMPT ===")
+    logger.info(flyer_prompt)
 
-    try:
-        # ❌ was: render_flyer_png(week, *sorted_pair(t1, t2), ...)
-        flyer_path = render_flyer_png(week, t1, t2, streamer=streamer_display, link=link)
-    except Exception as e:
-        logger.error(f"flyer render failed: {e}")
-        return
+    flyer_path, flyer_source = generate_flyer_with_fallback(
+        week=week,
+        t1=t1,
+        t2=t2,
+        streamer=streamer_display,
+        link=link,
+        flyer_prompt=flyer_prompt
+    )
 
     # ❌ was: post_flyer_with_everyone(..., *sorted_pair(t1, t2), ...)
-    #msg = await post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer_display, link)
+    msg = await post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer_display, link)
 
     # Keep dedupe key sorted so A/B == B/A for registry only
     registry_put(week, t1, t2, {
@@ -2461,6 +2557,8 @@ async def logs_cmd(ctx, *, rest: str = ""):
 # Event handler for bot login and startup details
 @bot.event
 async def on_ready():
+    load_team_id_mapping()
+
     try:
         guild = bot.get_guild(GUILD_ID)
         if not guild:
@@ -2632,14 +2730,26 @@ async def on_message(msg):
                 )
                 return
 
+            # build flyer prompt (if possible)
+            flyer_prompt = None
+
+            if week and t1 and t2:
+                flyer_data = fetch_flyer_data(week, t1, t2)
+                if flyer_data:
+                    flyer_prompt = build_flyer_image_prompt(flyer_data)
+
             try:
-                flyer_path = render_flyer_png(
-                    week or 0,
-                    t1,
-                    t2,
+                flyer_path, flyer_source = generate_flyer_with_fallback(
+                    week=week or 0,
+                    t1=t1,
+                    t2=t2,
                     streamer=msg.author.display_name,
-                    link=link
+                    link=link,
+                    flyer_prompt=flyer_prompt
                 )
+
+                logger.info(f"game-streams flyer source: {flyer_source}")
+
             except Exception as e:
                 logger.error(f"flyer render failed in game-streams: {e}")
                 return

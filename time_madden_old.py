@@ -178,7 +178,7 @@ _current_matchups: dict[str, str] = {}
 # list of (left_team, right_team) in the written order
 _current_pairs: list[tuple[str, str]] = []
 
-TEAM_NAME_RE = r"[A-Z][A-Za-z ]+"  # simple, forgiving
+TEAM_NAME_RE = r"[A-Z0-9][A-Za-z0-9 ]+"  # simple, forgiving
 
 # === PLAYTIME: storage & helpers =============================================
 PLAYTIME_FILE = "data/playtime.json"
@@ -458,7 +458,7 @@ def get_current_week_and_matchups():
     return int(st.get("week", 0)), st.get("matchups", [])
 
 ADVANCE_LINE_RE = re.compile(
-    r"^\s*([A-Za-z .’'-]+)\s*\([^)]*\)\s*vs\s*([A-Za-z .’'-]+)\s*\([^)]*\)\s*$",
+    r"^\s*([A-Za-z0-9 .’'-]+)\s*\([^)]*\)\s*vs\s*([A-Za-z0-9 .’'-]+)\s*\([^)]*\)\s*$",
     re.IGNORECASE
 )
 

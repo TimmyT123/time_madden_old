@@ -227,10 +227,10 @@ Style requirements:
 - Night stadium
 - Dramatic lighting
 - Team colors emphasized
-- Realistic football players (not real NFL photos)
+- Realistic football players
 - Madden-style broadcast look
 - High contrast
-- No real NFL logos
+- Real NFL logos
 """
 
 

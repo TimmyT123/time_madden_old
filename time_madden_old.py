@@ -281,7 +281,7 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # Link finder + nickname/team parsing (helpers)
 LINK_RE = re.compile(
-    r"(https?://\S+)",
+    r"(https?://(?:www\.)?(?:twitch\.tv/[^\s<>]+|youtube\.com/[^\s<>]+|youtu\.be/[^\s<>]+))",
     re.IGNORECASE
 )
 

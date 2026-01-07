@@ -87,6 +87,9 @@ EVERYONE_MENTIONS = AllowedMentions(everyone=True, users=False, roles=False, rep
 
 TEAM_NAME_TO_ID = {}
 
+WURD_LOGO_PATH = "./static/branding/wurd_logo.png"
+
+
 TEAM_COLORS = {
     "CARDINALS":   ("#97233F", "#000000"),
     "FALCONS":     ("#A71930", "#000000"),
@@ -214,6 +217,10 @@ def build_flyer_image_prompt(data: dict) -> str:
     return f"""
 Create a cinematic Madden-style NFL game flyer.
 
+Include a league logo at the top or center that reads:
+"WURD – Who’s Ur Daddy"
+Modern badge style, metallic, professional esports look.
+
 Matchup:
 {a['name']} ({a['record']}, OVR {a['ovr']})
 vs
@@ -232,8 +239,6 @@ Style requirements:
 - High contrast
 - Real NFL logos
 """
-
-
 
 
 # Add handlers to the logger
@@ -822,6 +827,19 @@ def generate_flyer_with_fallback(
     logger.info("Flyer image source: STATIC")
     return static_path, "STATIC"
 
+def _load_wurd_logo(max_width=220):
+    try:
+        logo = Image.open(WURD_LOGO_PATH).convert("RGBA")
+        ratio = max_width / logo.width
+        logo = logo.resize(
+            (int(logo.width * ratio), int(logo.height * ratio)),
+            Image.Resampling.LANCZOS
+        )
+        return logo
+    except Exception as e:
+        logger.warning(f"WURD logo load failed: {e}")
+        return None
+
 def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str | None) -> str:
     W,H = 1280,720
     prim1, _ = TEAM_COLORS.get(team1, ("#333333","#777777"))
@@ -830,6 +848,13 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
     draw = ImageDraw.Draw(canvas)
 
     _draw_header(draw, canvas, week)
+
+    # --- WURD LOGO ---
+    wurd_logo = _load_wurd_logo()
+    if wurd_logo:
+        x = (W - wurd_logo.width) // 2
+        y = 120  # just below header bar
+        canvas.alpha_composite(wurd_logo, (x, y))
 
     # badges + logos
     lcx, rcx, cy = W//2 - 260, W//2 + 260, H//2 - 10

@@ -1180,6 +1180,8 @@ async def on_thread_create(thread: nextcord.Thread):
 
     logger.info("=== FLYER API DATA ===")
     logger.info(json.dumps(flyer_data, indent=2))
+    logger.info("=== FLYER CAPTION ===")
+    logger.info(flyer_caption)
     logger.info("=== FLYER IMAGE PROMPT ===")
     logger.info(flyer_prompt)
 
@@ -2733,10 +2735,17 @@ async def on_message(msg):
             # build flyer prompt (if possible)
             flyer_prompt = None
 
-            if week and t1 and t2:
-                flyer_data = fetch_flyer_data(week, t1, t2)
-                if flyer_data:
-                    flyer_prompt = build_flyer_image_prompt(flyer_data)
+            home_id = TEAM_NAME_TO_ID.get(t1)
+            away_id = TEAM_NAME_TO_ID.get(t2)
+
+            flyer_data = (
+                fetch_flyer_data(home_id, away_id)
+                if home_id and away_id
+                else None
+            )
+
+            if flyer_data:
+                flyer_prompt = build_flyer_image_prompt(flyer_data)
 
             try:
                 flyer_path, flyer_source = generate_flyer_with_fallback(

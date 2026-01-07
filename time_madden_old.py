@@ -217,18 +217,24 @@ def build_flyer_image_prompt(data: dict) -> str:
     return f"""
 Create a cinematic Madden-style NFL game flyer.
 
-Include a league logo at the top or center that reads:
+IMPORTANT:
+- Display the matchup text EXACTLY as written
+- Do NOT swap team order
+- First team is on the LEFT, second team on the RIGHT
+
+League branding:
+Include the official league logo at the top or center:
 "WURD – Who’s Ur Daddy"
-Modern badge style, metallic, professional esports look.
+Modern metallic badge, professional esports style.
 
-Matchup:
-{a['name']} ({a['record']}, OVR {a['ovr']})
-vs
+Matchup (exact order):
 {h['name']} ({h['record']}, OVR {h['ovr']})
+vs
+{a['name']} ({a['record']}, OVR {a['ovr']})
 
-Feature star players:
-{a['name']}: {", ".join(p['name'] + " (" + p['pos'] + ")" for p in a['top_players'])}
+Star players:
 {h['name']}: {", ".join(p['name'] + " (" + p['pos'] + ")" for p in h['top_players'])}
+{a['name']}: {", ".join(p['name'] + " (" + p['pos'] + ")" for p in a['top_players'])}
 
 Style requirements:
 - Night stadium
@@ -237,7 +243,7 @@ Style requirements:
 - Realistic football players
 - Madden-style broadcast look
 - High contrast
-- Real NFL logos
+- Include league logo prominently
 """
 
 

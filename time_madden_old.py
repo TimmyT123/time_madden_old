@@ -179,7 +179,7 @@ def generate_chatgpt_flyer_image(prompt: str, out_path: str) -> bool:
         result = _openai_client.images.generate(
             model="gpt-image-1",
             prompt=prompt,
-            size="1024x1024",
+            size="1536x1024",
             n=1
         )
 
@@ -2824,7 +2824,7 @@ async def on_message(msg):
                 link
             )
 
-            lobby = get_lobby_talk_channel(channel.guild)
+            lobby = get_lobby_talk_channel(msg.guild)
 
             if lobby:
                 await channel.send(

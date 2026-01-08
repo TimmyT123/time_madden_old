@@ -1241,7 +1241,7 @@ async def on_thread_create(thread: nextcord.Thread):
         "message_id": msg.id,
         "flyer_path": flyer_path,
         "author_id": getattr(author, "id", 0),
-        "ts": datetime.utcnow().isoformat()+"Z"
+        "ts": datetime.now(dt_timezone.utc).isoformat()
     })
 
     if not link and author:
@@ -2459,6 +2459,8 @@ def _render_user(
 
     return "\n".join(lines).rstrip()
 
+def get_lobby_talk_channel(guild):
+    return nextcord.utils.get(guild.text_channels, name="lobby-talk")
 
 @bot.command(name="logs")
 async def logs_cmd(ctx, *, rest: str = ""):
@@ -2821,13 +2823,21 @@ async def on_message(msg):
                 link
             )
 
+            lobby = get_lobby_talk_channel(channel.guild)
+
+            if lobby:
+                await channel.send(
+                    f"💬 **Game discussion**\n"
+                    f"Please use {lobby.mention} for game discussion."
+                )
+
             # Registry key is order-agnostic (sorted inside flyer_key),
             # so future attempts for this same week/game will be blocked.
             registry_put(season, week or 0, t1, t2, {
                 "message_id": None,
                 "source": "game-streams-channel",
                 "author_id": getattr(msg.author, "id", 0),
-                "ts": datetime.utcnow().isoformat() + "Z"
+                "ts": datetime.now(dt_timezone.utc).isoformat()
             })
 
     except Exception as e:

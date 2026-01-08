@@ -225,7 +225,7 @@ IMPORTANT:
 
 League branding:
 Include the official league logo at the top or center:
-"WURD – Who’s Ur Daddy"
+"WURD – Who’s UR Daddy"
 Modern metallic badge, professional esports style.
 
 Matchup (exact order):
@@ -737,12 +737,29 @@ FONT_HDR = _font(86, bold=True)
 FONT_SUB = _font(48, bold=True)
 FONT_BODY= _font(32)
 
-def _draw_header(draw, canvas, week: int | None):
-    bar = Image.new("RGBA", (canvas.width, 110), (0,0,0,140))
-    canvas.alpha_composite(bar, (0,0))
-    txt = week_label(week)  # <<— uses PRE/WEEK label
-    tw, th = draw.textbbox((0,0), txt, font=FONT_HDR)[2:]
-    draw.text(((canvas.width - tw)//2, 55 - th//2), txt, fill="white", font=FONT_HDR)
+def _draw_header_logo(draw, canvas, week: int | None):
+    # Header bar
+    bar_h = 130
+    bar = Image.new("RGBA", (canvas.width, bar_h), (0, 0, 0, 160))
+    canvas.alpha_composite(bar, (0, 0))
+
+    # WURD logo (centered)
+    logo = _load_wurd_logo(max_width=300)
+    if logo:
+        lx = (canvas.width - logo.width) // 2
+        ly = (bar_h - logo.height) // 2 - 6
+        canvas.alpha_composite(logo, (lx, ly))
+
+    # Optional: small week text under logo
+    if week:
+        wk = week_label(week).replace("WURD • ", "")
+        tw, th = draw.textbbox((0, 0), wk, font=FONT_BODY)[2:]
+        draw.text(
+            ((canvas.width - tw) // 2, bar_h - th - 10),
+            wk,
+            fill="white",
+            font=FONT_BODY
+        )
 
 def _gradient_bg(left_color: str, right_color: str, W=1280, H=720):
     def to_rgb(h): h=h.lstrip("#"); return tuple(int(h[i:i+2],16) for i in (0,2,4))
@@ -797,7 +814,8 @@ def generate_flyer_with_fallback(
     t2: str,
     streamer: str,
     link: str | None,
-    flyer_prompt: str | None
+    flyer_prompt: str | None,
+    flyer_data: dict | None = None
 ) -> tuple[str, str]:
     """
     Returns: (flyer_path, source) where source is 'AI' or 'STATIC'
@@ -828,7 +846,8 @@ def generate_flyer_with_fallback(
         t1,
         t2,
         streamer=streamer,
-        link=link
+        link=link,
+        flyer_data=flyer_data
     )
 
     logger.info("Flyer image source: STATIC")
@@ -847,14 +866,28 @@ def _load_wurd_logo(max_width=220):
         logger.warning(f"WURD logo load failed: {e}")
         return None
 
-def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str | None) -> str:
+def _team_block(data: dict, side: str):
+    """
+    side = 'home' or 'away'
+    Returns (record, ovr, stars[])
+    """
+    if not data or side not in data:
+        return None, None, []
+
+    t = data[side]
+    record = t.get("record")
+    ovr = t.get("ovr")
+    stars = t.get("top_players", [])[:2]  # limit to top 2
+    return record, ovr, stars
+
+def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str | None, flyer_data=None) -> str:
     W,H = 1280,720
     prim1, _ = TEAM_COLORS.get(team1, ("#333333","#777777"))
     prim2, _ = TEAM_COLORS.get(team2, ("#333333","#777777"))
     canvas = _gradient_bg(prim1, prim2, W, H)
     draw = ImageDraw.Draw(canvas)
 
-    _draw_header(draw, canvas, week)
+    _draw_header_logo(draw, canvas, week)
 
     # --- WURD LOGO ---
     wurd_logo = _load_wurd_logo()
@@ -881,6 +914,48 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
     # team labels
     draw.text((lcx - 120, cy + 160), team1, font=FONT_SUB, fill="white")
     draw.text((rcx - 110, cy + 160), team2, font=FONT_SUB, fill="white")
+
+    # --- TEAM STATS ---
+    if flyer_data:
+        h_rec, h_ovr, h_stars = _team_block(flyer_data, "home")
+        a_rec, a_ovr, a_stars = _team_block(flyer_data, "away")
+
+        if h_rec and h_ovr:
+            draw.text(
+                (lcx - 120, cy + 200),
+                f"({h_rec} | OVR {h_ovr})",
+                font=FONT_BODY,
+                fill="white"
+            )
+
+        if a_rec and a_ovr:
+            draw.text(
+                (rcx - 120, cy + 200),
+                f"({a_rec} | OVR {a_ovr})",
+                font=FONT_BODY,
+                fill="white"
+            )
+
+    # --- STAR PLAYERS ---
+    star_y = cy + 250
+
+    def draw_stars(x, stars):
+        y = star_y
+        for p in stars:
+            name = p.get("name")
+            pos = p.get("pos")
+            if name and pos:
+                draw.text(
+                    (x, y),
+                    f"⭐ {name} ({pos})",
+                    font=FONT_BODY,
+                    fill="white"
+                )
+                y += 34
+
+    if flyer_data:
+        draw_stars(lcx - 160, h_stars)
+        draw_stars(rcx - 160, a_stars)
 
     # bottom info
     y = 560

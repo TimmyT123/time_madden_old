@@ -179,7 +179,7 @@ def generate_chatgpt_flyer_image(prompt: str, out_path: str) -> bool:
         result = _openai_client.images.generate(
             model="gpt-image-1",
             prompt=prompt,
-            size="1536x1024",
+            size="1024x1536",
             n=1
         )
 

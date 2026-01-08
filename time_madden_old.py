@@ -860,7 +860,7 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
     wurd_logo = _load_wurd_logo()
     if wurd_logo:
         x = (W - wurd_logo.width) // 2
-        y = 120  # just below header bar
+        y = 60  # just below header bar
         canvas.alpha_composite(wurd_logo, (x, y))
 
     # badges + logos

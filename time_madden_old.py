@@ -710,17 +710,17 @@ def _save_registry(d: dict):
         json.dump(d, f, indent=2)
     os.replace(tmp, FLYER_REGISTRY)
 
-def flyer_key(week: int, team_a: str, team_b: str) -> str:
+def flyer_key(season: int | str, week: int, team_a: str, team_b: str) -> str:
     a, b = sorted_pair(team_a, team_b)
-    return f"week:{week}:{a}:{b}"
+    return f"season:{season}:week:{week}:{a}:{b}"
 
-def registry_has(week: int, t1: str, t2: str) -> bool:
+def registry_has(season: int | str, week: int, t1: str, t2: str) -> bool:
     reg = _load_registry()
-    return flyer_key(week, t1, t2) in reg
+    return flyer_key(season, week, t1, t2) in reg
 
-def registry_put(week: int, t1: str, t2: str, record: dict):
+def registry_put(season: int | str, week: int, t1: str, t2: str, record: dict):
     reg = _load_registry()
-    reg[flyer_key(week, t1, t2)] = record
+    reg[flyer_key(season, week, t1, t2)] = record
     _save_registry(reg)
 
 
@@ -1087,6 +1087,17 @@ async def rebuild_users(ctx):
     except:
         await ctx.reply("`wurd24users.csv` regenerated.\n\n" + report)
 
+def get_current_season(flyer_data: dict | None = None) -> int | str:
+    """
+    Prefer season from flyer API data.
+    Fallback to 'unknown' if unavailable.
+    """
+    try:
+        if flyer_data and "season" in flyer_data:
+            return int(flyer_data["season"])
+    except Exception:
+        pass
+    return "unknown"
 
 def prefer_learned_week(parsed_week: int | None) -> int | None:
     """If we’ve learned a week from the advance, prefer it over any parsed/user week."""
@@ -1174,7 +1185,18 @@ async def on_thread_create(thread: nextcord.Thread):
     if not allowed:
         return
 
-    if registry_has(week, t1, t2):
+    home_id = TEAM_NAME_TO_ID.get(t1)
+    away_id = TEAM_NAME_TO_ID.get(t2)
+
+    flyer_data = (
+        fetch_flyer_data(home_id, away_id)
+        if home_id and away_id
+        else None
+    )
+
+    season = get_current_season(flyer_data)
+
+    if registry_has(season, week, t1, t2):
         return
 
     link = None
@@ -1186,21 +1208,6 @@ async def on_thread_create(thread: nextcord.Thread):
         pass
 
     streamer_display = getattr(author, "display_name", "Unknown")
-
-    # TEAM_NAME_TO_ID = {
-    #     "RAIDERS": "774242332",
-    #     "PATRIOTS": "774242331",
-    #     # fill in once we wire to your existing mapping
-    # }
-
-    home_id = TEAM_NAME_TO_ID.get(t1)
-    away_id = TEAM_NAME_TO_ID.get(t2)
-
-    flyer_data = (
-        fetch_flyer_data(home_id, away_id)
-        if home_id and away_id
-        else None
-    )
 
     if flyer_data:
         flyer_caption = build_flyer_caption(flyer_data)
@@ -1229,7 +1236,7 @@ async def on_thread_create(thread: nextcord.Thread):
     msg = await post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer_display, link)
 
     # Keep dedupe key sorted so A/B == B/A for registry only
-    registry_put(week, t1, t2, {
+    registry_put(season, week, t1, t2, {
         "thread_id": thread.id,
         "message_id": msg.id,
         "flyer_path": flyer_path,
@@ -2756,10 +2763,20 @@ async def on_message(msg):
             # 🚫 DUPLICATE GUARD:
             # If we already have a flyer for this WEEK + MATCHUP (thread or channel),
             # do NOT post another one – even if they drop the link again later.
-            if registry_has(week or 0, t1, t2):
+            home_id = TEAM_NAME_TO_ID.get(t1)
+            away_id = TEAM_NAME_TO_ID.get(t2)
+
+            flyer_data = (
+                fetch_flyer_data(home_id, away_id)
+                if home_id and away_id
+                else None
+            )
+
+            season = get_current_season(flyer_data) if flyer_data else "unknown"
+            if registry_has(season, week or 0, t1, t2):
                 logger.info(
-                    f"game-streams: flyer already exists for week={week} {t1} vs {t2}, "
-                    f"ignoring repeated link from {msg.author.display_name}."
+                    f"game-streams: flyer already exists for season={season} week={week} "
+                    f"{t1} vs {t2}, ignoring repeated link from {msg.author.display_name}."
                 )
                 return
 
@@ -2806,7 +2823,7 @@ async def on_message(msg):
 
             # Registry key is order-agnostic (sorted inside flyer_key),
             # so future attempts for this same week/game will be blocked.
-            registry_put(week or 0, t1, t2, {
+            registry_put(season, week or 0, t1, t2, {
                 "message_id": None,
                 "source": "game-streams-channel",
                 "author_id": getattr(msg.author, "id", 0),

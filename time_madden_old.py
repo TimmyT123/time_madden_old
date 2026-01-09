@@ -735,31 +735,28 @@ def _font(size: int, bold=False):
 
 FONT_HDR = _font(86, bold=True)
 FONT_SUB = _font(48, bold=True)
+FONT_HEADER = ImageFont.truetype("assets/fonts/Inter-Bold.ttf", 52)
 FONT_BODY= _font(32)
 
-def _draw_header_logo(draw, canvas, week: int | None):
-    # Header bar
+def _draw_header(draw, canvas, week: int | None):
     bar_h = 130
     bar = Image.new("RGBA", (canvas.width, bar_h), (0, 0, 0, 160))
     canvas.alpha_composite(bar, (0, 0))
 
-    # WURD logo (centered)
-    logo = _load_wurd_logo(max_width=300)
-    if logo:
-        lx = (canvas.width - logo.width) // 2
-        ly = (bar_h - logo.height) // 2 - 6
-        canvas.alpha_composite(logo, (lx, ly))
-
-    # Optional: small week text under logo
+    # Header text: WURD • WEEK X
     if week:
-        wk = week_label(week).replace("WURD • ", "")
-        tw, th = draw.textbbox((0, 0), wk, font=FONT_BODY)[2:]
-        draw.text(
-            ((canvas.width - tw) // 2, bar_h - th - 10),
-            wk,
-            fill="white",
-            font=FONT_BODY
-        )
+        header = week_label(week)  # already "WURD • WEEK 15"
+    else:
+        header = "WURD"
+
+    tw, th = draw.textbbox((0, 0), header, font=FONT_HEADER)[2:]
+
+    draw.text(
+        ((canvas.width - tw) // 2, (bar_h - th) // 2),
+        header,
+        fill="white",
+        font=FONT_HEADER
+    )
 
 def _gradient_bg(left_color: str, right_color: str, W=1280, H=720):
     def to_rgb(h): h=h.lstrip("#"); return tuple(int(h[i:i+2],16) for i in (0,2,4))
@@ -887,14 +884,7 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
     canvas = _gradient_bg(prim1, prim2, W, H)
     draw = ImageDraw.Draw(canvas)
 
-    _draw_header_logo(draw, canvas, week)
-
-    # --- WURD LOGO ---
-    wurd_logo = _load_wurd_logo()
-    if wurd_logo:
-        x = (W - wurd_logo.width) // 2
-        y = 60  # just below header bar
-        canvas.alpha_composite(wurd_logo, (x, y))
+    _draw_header(draw, canvas, week)
 
     # badges + logos
     lcx, rcx, cy = W//2 - 260, W//2 + 260, H//2 - 10
@@ -974,13 +964,12 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
     canvas.convert("RGB").save(path, "PNG")
     return path
 
-def _safe_link(url: str | None) -> str:
-    if not url:
-        return "(link pending)"
-    return f"<{url}>"
-
 def _caption(week: int | None, t1: str, t2: str, streamer: str, link: str | None) -> str:
-    link_line = f"Live: {_safe_link(link)}"
+    if link:
+        link_line = f"Live: [Watch Stream]({link})"
+    else:
+        link_line = "Live: (link pending)"
+
     header = week_label(week).replace("WURD • ", "**") + "**"
     return (
         "@everyone\n"

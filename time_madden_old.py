@@ -818,6 +818,9 @@ def generate_flyer_with_fallback(
     Returns: (flyer_path, source) where source is 'AI' or 'STATIC'
     """
 
+    logger.info("FLYER_PROMPT_PRESENT: %s", bool(flyer_prompt))
+    logger.info("FLYER_DATA_PRESENT: %s", bool(flyer_data))
+
     # ---- TRY AI FIRST ----
     if flyer_prompt:
         try:

@@ -825,6 +825,8 @@ def generate_flyer_with_fallback(
             os.makedirs(out_dir, exist_ok=True)
             ai_path = os.path.join(out_dir, f"{t1}_vs_{t2}_ai.png")
 
+            logger.info("Flyer data payload: %s", json.dumps(flyer_data, indent=2))
+
             ok = generate_chatgpt_flyer_image(
                 prompt=flyer_prompt,
                 out_path=ai_path

@@ -2893,7 +2893,7 @@ async def on_message(msg):
             lobby = get_lobby_talk_channel(msg.guild)
 
             if lobby:
-                await lobby.send(
+                await msg.channel.send(
                     f"💬 **Game discussion**\n"
                     f"Please use {lobby.mention} for game discussion."
                 )

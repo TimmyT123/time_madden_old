@@ -735,7 +735,7 @@ def _font(size: int, bold=False):
 
 FONT_HDR = _font(86, bold=True)
 FONT_SUB = _font(48, bold=True)
-FONT_HEADER = ImageFont.truetype("assets/fonts/Inter-Bold.ttf", 52)
+FONT_HEADER = _font(52, bold=True)
 FONT_BODY= _font(32)
 
 def _draw_header(draw, canvas, week: int | None):

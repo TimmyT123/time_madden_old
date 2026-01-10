@@ -2149,7 +2149,10 @@ async def seed_advance(ctx, *, block: str):
     _current_week = wk
     _current_pairs = pairs
     _current_matchups = mapping
+
     _save_week_state(wk, [[L, R] for (L, R) in pairs])
+    # write flyer cache
+    build_week_cache_from_current_state()
     await ctx.reply(f"Seeded WEEK {wk} with {len(pairs)} matchups. No messages posted.")
 
 

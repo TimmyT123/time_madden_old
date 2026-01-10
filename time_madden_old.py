@@ -831,6 +831,22 @@ def generate_flyer_with_fallback(
 
             logger.info("Flyer data payload: %s", json.dumps(flyer_data, indent=2))
 
+            if flyer_data:
+                t1d = flyer_data["team1"]
+                t2d = flyer_data["team2"]
+
+                logger.info("AI TEAM 1: %s | Rec=%s | OVR=%s | Players=%s",
+                            t1d["name"], t1d["record"], t1d["ovr"],
+                            ", ".join(p["name"] for p in t1d.get("players", []))
+                            )
+
+                logger.info("AI TEAM 2: %s | Rec=%s | OVR=%s | Players=%s",
+                            t2d["name"], t2d["record"], t2d["ovr"],
+                            ", ".join(p["name"] for p in t2d.get("players", []))
+                            )
+
+            logger.info("AI PROMPT:\n%s", flyer_prompt)
+
             ok = generate_chatgpt_flyer_image(
                 prompt=flyer_prompt,
                 out_path=ai_path
@@ -840,8 +856,8 @@ def generate_flyer_with_fallback(
                 logger.info("Flyer image source: AI")
                 return ai_path, "AI"
 
-        except Exception as e:
-            logger.warning(f"AI flyer failed, falling back to static: {e}")
+        except Exception:
+            logger.exception("AI flyer failed, falling back to static")
 
     # ---- FALLBACK TO STATIC ----
     static_path = render_flyer_png(

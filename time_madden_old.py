@@ -18,6 +18,7 @@ import sys
 import asyncio
 import logging
 import requests
+import hashlib
 
 from nextcord import File, AllowedMentions
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -2696,6 +2697,10 @@ async def on_ready():
         _current_pairs = pairs
         _current_matchups = mapping
         logger.info(f"Restored advance from file: WEEK={_current_week}, games={len(_current_pairs)}")
+        if os.path.exists("data/week_cache.json"):
+            logger.info("Week cache found on disk — flyer system ready")
+        else:
+            logger.warning("No week cache found — AI flyers will require seeding")
     except Exception as e:
         logger.warning(f"Could not restore advance state: {e}")
 
@@ -2740,6 +2745,81 @@ async def on_member_join(member):
         # Send the message in chunks if necessary
         for chunk in split_message(full_message):
             await channel.send(chunk)
+
+# ---------------------------------------
+
+
+def write_week_cache_if_changed(new_cache):
+    def _hash(x):
+        return hashlib.sha256(json.dumps(x, sort_keys=True).encode()).hexdigest()
+
+    if os.path.exists(WEEK_CACHE_PATH):
+        old = json.load(open(WEEK_CACHE_PATH))
+        if _hash(old) == _hash(new_cache):
+            logger.info("Week cache unchanged — not rewriting")
+            return
+
+    tmp = WEEK_CACHE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(new_cache, f, indent=2)
+    os.replace(tmp, WEEK_CACHE_PATH)
+
+    logger.info(f"Week cache written: WEEK {_current_week}")
+
+
+WEEK_CACHE_PATH = "data/week_cache.json"
+
+def build_week_cache_from_current_state():
+    if not _current_week or not _current_pairs:
+        logger.warning("Cannot build week cache — no advance loaded")
+        return
+
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    games = {}
+
+    for a, b in _current_pairs:
+        user_a = None
+        user_b = None
+
+        for m in guild.members:
+            team = extract_team_from_nick(m.display_name or "")
+            if team == a:
+                user_a = m
+            elif team == b:
+                user_b = m
+
+        if not user_a or not user_b:
+            logger.warning(f"Week cache: missing users for {a} vs {b}")
+            continue
+
+        game_id = f"{_current_week}_{a}_{b}"
+
+        games[a] = {
+            "team": a,
+            "discord_id": str(user_a.id),
+            "display": user_a.display_name,
+            "opponent": b,
+            "game_id": game_id
+        }
+        games[b] = {
+            "team": b,
+            "discord_id": str(user_b.id),
+            "display": user_b.display_name,
+            "opponent": a,
+            "game_id": game_id
+        }
+
+    cache = {
+        "season": datetime.now().year,
+        "week": _current_week,
+        "games": games
+    }
+
+    write_week_cache_if_changed(cache)
+# ---------------------------------------------------------------
 
 
 # Event handler for processing incoming messages
@@ -3035,6 +3115,8 @@ async def on_message(msg):
                     await delete_category_channels(guild)  # clear previous week’s forums
                     channel_activity_tracker.clear()
                     await create_user_user_channels(guild)  # create new matchup forums
+
+                    build_week_cache_from_current_state()
 
     # Regex search for time patterns in the message
     player_msg_time = re.search(r'\d{1,2}:\d{2}', msg.content)

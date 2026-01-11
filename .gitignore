@@ -21,3 +21,10 @@ players_export.csv
 user_timezones*.csv
 pending_timezones.csv
 prospects.json
+# --- Madden runtime / bot generated ---
+ap_users.json
+ap_modified.json
+ap_users.lock
+data/
+webhook_debug*.txt
+static/flyers/

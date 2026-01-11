@@ -2839,6 +2839,15 @@ def build_week_cache_from_current_state():
 
     write_week_cache_if_changed(cache)
 # ---------------------------------------------------------------
+async def trigger_companion_export():
+    await asyncio.sleep(300)
+
+    chan = bot.get_channel(GG_ALERT_CHANNEL_ID)
+    if chan:
+        await chan.send(
+            f"[WURD GG] 📡 WURD_WEEK_EXPORT\n"
+        )
+# ---------------------------------------------------------------
 
 
 # Event handler for processing incoming messages
@@ -3136,6 +3145,10 @@ async def on_message(msg):
                     await create_user_user_channels(guild)  # create new matchup forums
 
                     build_week_cache_from_current_state()
+
+                    # 🚀 Start 5-minute delayed Companion App export
+                    logger.info("Week advance complete — scheduling Companion export in 5 minutes")
+                    asyncio.create_task(trigger_companion_export())
 
     # Regex search for time patterns in the message
     player_msg_time = re.search(r'\d{1,2}:\d{2}', msg.content)

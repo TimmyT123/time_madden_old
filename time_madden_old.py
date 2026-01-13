@@ -3131,9 +3131,25 @@ async def on_message(msg):
 
                 first = True
                 for chunk in split_message(week_schedule):
-                    if first and ('all' not in msg_text):  # only ping on advance, not the full-season schedule
-                        await channel.send(f"@everyone\n{chunk}", allowed_mentions=EVERYONE_MENTIONS)
+                    if first and ('all' not in msg_text):
+                        now_az = datetime.now(pytz.timezone("US/Arizona"))
+                        day48 = now_az + timedelta(hours=48)
+                        advance = day48.replace(hour=18, minute=0, second=0, microsecond=0)
+
+                        advance_block = (
+                            "\n⏰ **Advance Time**\n"
+                            "This week is scheduled to advance on\n"
+                            f"**{advance.strftime('%A, %b %d @ ~%I:%M %p')} AZ**\n"
+                            "The advance always happens on the day 48 hours hits, around 6 PM Arizona time.\n"
+                            "If all U-U games finish early, the advance may happen sooner.\n"
+                        )
+
+                        await channel.send(
+                            f"@everyone\n{chunk}{advance_block}",
+                            allowed_mentions=EVERYONE_MENTIONS
+                        )
                         first = False
+
                     else:
                         await channel.send(chunk, allowed_mentions=AllowedMentions.none())
 

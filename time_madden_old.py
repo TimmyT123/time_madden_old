@@ -3140,8 +3140,9 @@ async def on_message(msg):
                             "\n\n⏰ **Advance Time**\n"
                             "This week is scheduled to advance on\n"
                             f"**{advance.strftime('%A, %b %d @ ~%I:%M %p')} AZ**\n"
-                            "The advance always happens on the day 48 hours hits, around 6 PM Arizona time.\n"
-                            "If all U-U games finish early, the advance may happen sooner.\n\n"
+                            "This is the normal 48-hour target time (around 6 PM Arizona).\n"
+                            "If all User-vs-User games finish early, the advance may happen sooner.\n"
+                            "If games are still being played, commissioners will notify everyone of any delay.\n\n"
                         )
 
                         await channel.send(

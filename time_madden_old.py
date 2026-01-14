@@ -3137,11 +3137,11 @@ async def on_message(msg):
                         advance = day48.replace(hour=18, minute=0, second=0, microsecond=0)
 
                         advance_block = (
-                            "\n⏰ **Advance Time**\n"
+                            "\n\n⏰ **Advance Time**\n"
                             "This week is scheduled to advance on\n"
                             f"**{advance.strftime('%A, %b %d @ ~%I:%M %p')} AZ**\n"
                             "The advance always happens on the day 48 hours hits, around 6 PM Arizona time.\n"
-                            "If all U-U games finish early, the advance may happen sooner.\n"
+                            "If all U-U games finish early, the advance may happen sooner.\n\n"
                         )
 
                         await channel.send(

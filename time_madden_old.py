@@ -3138,7 +3138,7 @@ async def on_message(msg):
 
                         advance_block = (
                             "\n\n⏰ **Advance Time**\n"
-                            "This week is scheduled to advance on\n"
+                            "Next week is scheduled to advance on\n"
                             f"**{advance.strftime('%A, %b %d @ ~%I:%M %p')} AZ**\n"
                             "This is the normal 48-hour target time (around 6 PM Arizona).\n"
                             "If all User-vs-User games finish early, the advance may happen sooner.\n"

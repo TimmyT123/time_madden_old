@@ -497,31 +497,48 @@ def _pre_to_week(n: int) -> int:
 _PRE_LABELS = {-3: "PRE 1", -2: "PRE 2", -1: "PRE 3"}
 
 def week_label(week: int | None) -> str:
+    if week == 19: return "WURD • WILD CARD"
+    if week == 20: return "WURD • DIVISIONAL"
+    if week == 21: return "WURD • CONFERENCE"
+    if week == 23: return "WURD • SUPER BOWL"
+
     if week in _PRE_LABELS:
         return f"WURD • {_PRE_LABELS[week]}"
     if not week:
-        return "WURD"   # fallback if unknown
+        return "WURD"
     return f"WURD • WEEK {week}"
 
 def parse_week_token(text: str) -> int | None:
-    """
-    Finds 'WEEK 7' or 'PRE 2' in text and returns a normalized week number:
-      WEEK N -> N
-      PRE N  -> -3..-1 (for N=1..3)
-    """
     if not text:
         return None
-    # WEEK N
-    m = re.search(r"\bW(?:EEK)?\s*(\d{1,2})\b", text, re.IGNORECASE)
+
+    t = text.upper()
+
+    # ---- PLAYOFFS ----
+    if re.search(r"\bWILD\s*CARD\b|\bWC\b", t):
+        return 19
+
+    if re.search(r"\bDIVISIONAL\b|\bDIV\b", t):
+        return 20
+
+    if re.search(r"\bCONFERENCE\b|\bCONF\b|\bCF\b", t):
+        return 21
+
+    if re.search(r"\bSUPER\s*BOWL\b|\bSUPERBOWL\b|\bSB\b", t):
+        return 23
+
+    # ---- REGULAR SEASON ----
+    m = re.search(r"\bW(?:EEK)?\s*(\d{1,2})\b", t)
     if m:
         return int(m.group(1))
 
-    # PRE N or PRESEASON N
-    m = re.search(r"\bPRE(?:SEASON)?\s*(\d)\b", text, re.IGNORECASE)
+    # ---- PRESEASON ----
+    m = re.search(r"\bPRE(?:SEASON)?\s*(\d)\b", t)
     if m:
         n = int(m.group(1))
         if 1 <= n <= 3:
             return _pre_to_week(n)
+
     return None
 
 

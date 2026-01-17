@@ -518,7 +518,7 @@ def parse_week_token(text: str) -> int | None:
     if re.search(r"\bWILD\s*CARD\b|\bWC\b", t):
         return 19
 
-    if re.search(r"\bDIVISIONAL\b|\bDIV\b", t):
+    if re.search(r"\bDIVISIONAL\b|\bDIVISION\b|\bDIV\b", t):
         return 20
 
     if re.search(r"\bCONFERENCE\b|\bCONF\b|\bCF\b", t):
@@ -3102,11 +3102,17 @@ async def on_message(msg):
         pattern_week = r"^week \d{1,2}$"
         pattern_pre = r"^pre\s*[123]$"  # NEW: pre 1, pre 2, pre 3
         pattern_all = r"^all$"
+        pattern_playoffs = r"^week\s+(wild\s*card|divisional|conference|super\s*bowl)$"
 
-        if re.fullmatch(pattern_week, msg_text) or re.fullmatch(pattern_pre, msg_text) or re.fullmatch(pattern_all,
-                                                                                                       msg_text):
+        if (
+                re.fullmatch(pattern_week, msg_text) or
+                re.fullmatch(pattern_pre, msg_text) or
+                re.fullmatch(pattern_playoffs, msg_text) or
+                re.fullmatch(pattern_all, msg_text)
+        ):
+
             # Normalize what we pass into the scheduler
-            norm = msg_text
+            norm = msg_text.upper()
             if re.fullmatch(pattern_pre, msg_text):
                 # If your Wurd24Scheduler expects uppercase "PRE 1" tokens:
                 norm = msg_text.replace("pre", "PRE").upper()  # -> "PRE 1"

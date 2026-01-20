@@ -3133,28 +3133,86 @@ async def on_message(msg):
                 channel_id = 1290487933131952138 if 'all' in msg_text else 1149401984466681856
                 channel = bot.get_channel(channel_id)
 
-                def format_schedule_for_discord(raw_text: str) -> str:
-                    formatted_lines = []
-                    for line in raw_text.splitlines():
-                        line = line.strip()
-                        if not line:
-                            continue
-                        if line.upper().startswith("PRE") or line.upper().startswith("WEEK"):
-                            # Add section headers with emojis and lines
-                            formatted_lines.append(f"\n🏈  **{line.upper()}**\n────────────────────")
-                        else:
-                            # Add emoji for each game or bye line
-                            if "BYE" in line:
-                                formatted_lines.append(f" {line}")
+                def format_schedule_for_discord(raw_text: str, week_token: int | None) -> str:
+                    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+
+                    # Detect playoffs
+                    is_playoffs = week_token in (19, 20, 21, 23)
+
+                    if not is_playoffs:
+                        # ---- ORIGINAL BEHAVIOR FOR REGULAR SEASON ----
+                        formatted_lines = []
+                        for line in lines:
+                            if line.upper().startswith("PRE") or line.upper().startswith("WEEK"):
+                                formatted_lines.append(f"\n🏈  **{line.upper()}**\n────────────────────")
                             else:
                                 formatted_lines.append(f" {line}")
-                    return "\n".join(formatted_lines)
+                        return "\n".join(formatted_lines)
 
-                week_schedule = format_schedule_for_discord(week_schedule)
+                    # ---- PLAYOFF BEHAVIOR: SPLIT BY AFC / NFC ----
+                    header = None
+                    games = []
+
+                    for line in lines:
+                        if line.upper().startswith(
+                                ("PRE", "WEEK", "WURD", "WILD", "DIVISIONAL", "CONFERENCE", "SUPER")):
+                            header = line.upper()
+                        else:
+                            games.append(line)
+
+                    afc_games = []
+                    nfc_games = []
+
+                    for g in games:
+                        # Expect: "Broncos(U) vs Raiders(U)" or similar
+                        m = re.match(r"^\s*([A-Za-z0-9 .’'-]+)\s*\([^)]*\)\s*vs\s*([A-Za-z0-9 .’'-]+)", g,
+                                     re.IGNORECASE)
+                        if not m:
+                            continue
+
+                        t1 = canonical_team(m.group(1).upper())
+                        t2 = canonical_team(m.group(2).upper())
+
+                        # Look up conference from nfl_teams mapping
+                        div1 = nfl_teams.get(t1)
+                        div2 = nfl_teams.get(t2)
+
+                        # Default to AFC if unknown (safe fallback)
+                        if div1 and div2 and div1.startswith("NFC") and div2.startswith("NFC"):
+                            nfc_games.append(g)
+                        elif div1 and div2 and div1.startswith("AFC") and div2.startswith("AFC"):
+                            afc_games.append(g)
+                        else:
+                            # Fallback (should never happen in playoffs)
+                            afc_games.append(g)
+
+                    out = []
+
+                    if header:
+                        out.append(f"\n🏈  **{header}**\n────────────────────")
+
+                    if afc_games:
+                        out.append("\n**AFC**")
+                        for g in afc_games:
+                            out.append(f" {g}")
+
+                    if nfc_games:
+                        out.append("\n**NFC**")
+                        for g in nfc_games:
+                            out.append(f" {g}")
+
+                    return "\n".join(out)
+
+                parsed_week = parse_week_token(msg_text)
+                week_schedule = format_schedule_for_discord(week_schedule, parsed_week)
+
+                # Regular season only (weeks 1–18)
+                is_playoffs = parsed_week in (19, 20, 21, 23)
 
                 first = True
                 for chunk in split_message(week_schedule):
-                    if first and ('all' not in msg_text):
+                    if first and ('all' not in msg_text) and not is_playoffs:
+
                         now_az = datetime.now(pytz.timezone("US/Arizona"))
                         day48 = now_az + timedelta(hours=48)
                         advance = day48.replace(hour=18, minute=0, second=0, microsecond=0)

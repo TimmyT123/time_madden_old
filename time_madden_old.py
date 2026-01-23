@@ -126,6 +126,44 @@ TEAM_COLORS = {
     "COMMANDERS":  ("#5A1414", "#FFB612"),
 }
 
+# Manually maintained list of GOTW matchups for the week
+# Format: { week: [("TEAM1","TEAM2"), ...] }
+
+GAMES_OF_THE_WEEK = {
+    5: [("BILLS", "CHIEFS")],
+    12: [("PACKERS", "BEARS")],
+    20: [("49ERS", "EAGLES")],   # example playoff still fine
+}
+
+def is_game_of_the_week(week: int | None, t1: str, t2: str) -> bool:
+    if not week:
+        return False
+
+    games = GAMES_OF_THE_WEEK.get(week, [])
+    pair = tuple(sorted([t1, t2]))
+
+    for a, b in games:
+        if tuple(sorted([a, b])) == pair:
+            return True
+
+    return False
+
+PLAYOFF_WEEKS = {19, 20, 21, 23}   # WC, Div, Conf, Super Bowl
+
+def should_use_ai_flyer(week: int | None, t1: str, t2: str) -> bool:
+    if not week:
+        return False
+
+    # Playoffs + Super Bowl ALWAYS AI
+    if week in PLAYOFF_WEEKS:
+        return True
+
+    # Regular season ONLY if designated Game of the Week
+    if is_game_of_the_week(week, t1, t2):
+        return True
+
+    return False
+
 FLYER_REGISTRY = "data/flyers.json"  # de-dupe store
 os.makedirs(os.path.dirname(FLYER_OUT_DIR), exist_ok=True)
 
@@ -1313,12 +1351,14 @@ async def on_thread_create(thread: nextcord.Thread):
 
     streamer_display = getattr(author, "display_name", "Unknown")
 
-    if flyer_data:
+    use_ai = should_use_ai_flyer(week, t1, t2)
+
+    if flyer_data and use_ai:
         flyer_caption = build_flyer_caption(flyer_data)
         flyer_prompt = build_flyer_image_prompt(flyer_data)
     else:
         flyer_caption = None
-        flyer_prompt = None
+        flyer_prompt = None  # forces static fallback
 
     logger.info("=== FLYER API DATA ===")
     logger.info(json.dumps(flyer_data, indent=2))
@@ -1333,7 +1373,8 @@ async def on_thread_create(thread: nextcord.Thread):
         t2=t2,
         streamer=streamer_display,
         link=link,
-        flyer_prompt=flyer_prompt
+        flyer_prompt=flyer_prompt,
+        flyer_data=flyer_data
     )
 
     # ❌ was: post_flyer_with_everyone(..., *sorted_pair(t1, t2), ...)
@@ -2989,8 +3030,12 @@ async def on_message(msg):
                 else None
             )
 
-            if flyer_data:
+            use_ai = should_use_ai_flyer(week, t1, t2)
+
+            if flyer_data and use_ai:
                 flyer_prompt = build_flyer_image_prompt(flyer_data)
+            else:
+                flyer_prompt = None
 
             try:
                 flyer_path, flyer_source = generate_flyer_with_fallback(

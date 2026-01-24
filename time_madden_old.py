@@ -3259,14 +3259,24 @@ async def on_message(msg):
                     if first and ('all' not in msg_text) and not is_playoffs:
 
                         now_az = datetime.now(pytz.timezone("US/Arizona"))
-                        day48 = now_az + timedelta(hours=48)
-                        advance = day48.replace(hour=18, minute=0, second=0, microsecond=0)
+
+                        # Preseason weeks are negative: -3, -2, -1
+                        is_preseason = parsed_week is not None and parsed_week < 0
+
+                        if is_preseason:
+                            target = now_az + timedelta(hours=24)  # 1 day for preseason
+                            timing_note = "This is the preseason 24-hour target time (around 6 PM Arizona)."
+                        else:
+                            target = now_az + timedelta(hours=48)  # 2 days for season
+                            timing_note = "This is the normal 48-hour target time (around 6 PM Arizona)."
+
+                        advance = target.replace(hour=18, minute=0, second=0, microsecond=0)
 
                         advance_block = (
                             "\n\n⏰ **Advance Time**\n"
                             "Next week is scheduled to advance on\n"
                             f"**{advance.strftime('%A, %b %d @ ~%I:%M %p')} AZ**\n"
-                            "This is the normal 48-hour target time (around 6 PM Arizona).\n"
+                            f"{timing_note}\n"
                             "If all User-vs-User games finish early, the advance may happen sooner.\n"
                             "If games are still being played, commissioners will notify everyone of any delay.\n\n"
                         )

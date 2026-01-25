@@ -316,7 +316,11 @@ intents = nextcord.Intents.default()
 intents.members = True
 intents.dm_messages = True  # Enable direct message handling
 intents.message_content = True   # Enable content reading for messages
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents,
+    help_command=None
+)
 
 
 # Link finder + nickname/team parsing (helpers)
@@ -1820,6 +1824,9 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
                 overwrites=overwrites,
                 reason="Creating a private channel with the bot."
             )
+
+            await asyncio.sleep(1.5)  # throttle between channel creations (prevents global rate limit)
+
             channel_activity_tracker[channel.id] = {
                 "created_at": datetime.now(pytz.utc),
                 "member_ids": member_ids,
@@ -1839,10 +1846,14 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
 
             if non_ap_mentions:
                 await channel.send(" ".join(non_ap_mentions))
+                await asyncio.sleep(1.1)  # throttle between sends
 
             # channel welcome message
             await channel.send(message_content)
-            await channel.send("\u200b")  # zero-width space
+            await asyncio.sleep(1.1)
+
+            await channel.send("\u200b")
+            await asyncio.sleep(1.1)
 
             # Timezone difference logic (keep as-is)
             if len(member_info) == 2:
@@ -1914,6 +1925,9 @@ async def delete_category_channels(guild):
         try:
             await channel.delete(reason="Clearing category for new user-user channels")
             logger.info(f"Deleted channel '{channel.name}' in category '{category.name}'.")
+
+            await asyncio.sleep(1.5)  # 🔴 throttle deletions (very important)
+
         except nextcord.Forbidden:
             logger.error(f"Bot does not have permission to delete channel '{channel.name}'.")
         except nextcord.HTTPException as e:
@@ -1985,6 +1999,7 @@ async def create_user_user_channels(guild):
             member_ids=member_ids,
             message_content=f"Welcome to the {team_name} channel!",
             )
+        await asyncio.sleep(0.8)
 
 
 def get_time_zones():
@@ -3286,9 +3301,11 @@ async def on_message(msg):
                             allowed_mentions=EVERYONE_MENTIONS
                         )
                         first = False
+                        await asyncio.sleep(1.1)
 
                     else:
                         await channel.send(chunk, allowed_mentions=AllowedMentions.none())
+                        await asyncio.sleep(1.1)
 
                 # For both 'week N' *and* 'pre N', build the game forums
                 if any(k in msg_text for k in ("week", "pre")):
@@ -3313,6 +3330,27 @@ async def on_message(msg):
 
 
 
-# Run the bot with the provided token
-bot.run(token)
+import traceback
+
+while True:
+    try:
+        logger.info("Starting Discord bot...")
+        bot.run(token)
+
+    except nextcord.errors.HTTPException as e:
+        # Discord rate limit or login failure
+        if "429" in str(e):
+            logger.warning("Hit Discord rate limit (429). Sleeping 10 minutes before retry...")
+            time.sleep(600)   # wait 10 minutes
+        else:
+            logger.error(f"HTTPException during bot.run(): {e}")
+            traceback.print_exc()
+            time.sleep(60)
+
+    except Exception as e:
+        logger.error("Fatal error in bot loop:")
+        traceback.print_exc()
+        logger.info("Restarting bot in 60 seconds...")
+        time.sleep(60)
+
 

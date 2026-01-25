@@ -69,7 +69,7 @@ file_handler = RotatingFileHandler('bot.log', maxBytes=5 * 1024 * 1024, backupCo
 
 
 # === GG ALERT CONFIG (put this near the top; before on_message) ===
-GG_COOLDOWN_SEC = 300  # 5 minutes
+GG_COOLDOWN_SEC = 600  # 10 minutes
 _last_gg_alert_ts = 0.0
 
 GG_WORD_RE = re.compile(r"\bggs?\b", re.IGNORECASE)

@@ -3335,7 +3335,10 @@ async def on_message(msg):
 
                     else:
                         await channel.send(chunk, allowed_mentions=AllowedMentions.none())
-                        await asyncio.sleep(1.1)
+                        if asyncio.get_event_loop().is_running():
+                            await asyncio.sleep(1.1)
+                        else:
+                            time.sleep(0.5)
 
                 # For both 'week N' *and* 'pre N', build the game forums
                 if any(k in msg_text for k in ("week", "pre")):

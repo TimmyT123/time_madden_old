@@ -961,15 +961,31 @@ def _load_wurd_logo(max_width=220):
 def _team_block(data: dict, side: str):
     """
     side = 'home' or 'away'
+    Supports both:
+      - old format: data["home"] / data["away"]
+      - new format: data["team1"] / data["team2"]
     Returns (record, ovr, stars[])
     """
-    if not data or side not in data:
+    if not data:
         return None, None, []
 
-    t = data[side]
+    # NEW API format (preferred)
+    if "team1" in data and "team2" in data:
+        t = data["team1"] if side == "home" else data["team2"]
+    # OLD fallback format
+    elif side in data:
+        t = data[side]
+    else:
+        return None, None, []
+
     record = t.get("record")
     ovr = t.get("ovr")
-    stars = t.get("top_players", [])[:2]  # limit to top 2
+    stars = (
+        t.get("players")          # AI / new API
+        or t.get("top_players")   # older API
+        or []
+    )[:2]  # limit to top 2
+
     return record, ovr, stars
 
 def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str | None, flyer_data=None) -> str:

@@ -2941,6 +2941,19 @@ def build_week_cache_from_current_state():
     }
 
     write_week_cache_if_changed(cache)
+
+
+async def safe_async_sleep(sec: float):
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            await asyncio.sleep(sec)
+        else:
+            time.sleep(sec)
+    except RuntimeError:
+        # no loop or loop closed
+        time.sleep(sec)
+
 # ---------------------------------------------------------------
 async def trigger_companion_export():
     await asyncio.sleep(300)
@@ -3331,14 +3344,12 @@ async def on_message(msg):
                             allowed_mentions=EVERYONE_MENTIONS
                         )
                         first = False
-                        await asyncio.sleep(1.1)
+                        await safe_async_sleep(1.1)
 
                     else:
                         await channel.send(chunk, allowed_mentions=AllowedMentions.none())
-                        if asyncio.get_event_loop().is_running():
-                            await asyncio.sleep(1.1)
-                        else:
-                            time.sleep(0.5)
+                        await safe_async_sleep(1.1)
+
 
                 # For both 'week N' *and* 'pre N', build the game forums
                 if any(k in msg_text for k in ("week", "pre")):

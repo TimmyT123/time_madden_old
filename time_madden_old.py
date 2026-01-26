@@ -3365,7 +3365,7 @@ async def on_message(msg):
                     asyncio.create_task(trigger_companion_export())
 
     # Regex search for time patterns in the message
-    player_msg_time = re.search(r'\d{1,2}:\d{2}', msg.content)
+    # player_msg_time = re.search(r'\d{1,2}:\d{2}', msg.content)
 
     # # Respond with time if a valid time pattern is found in the message
     # if player_msg_time:
@@ -3374,27 +3374,12 @@ async def on_message(msg):
 
 
 
-import traceback
+try:
+    logger.info("Starting Discord bot...")
+    bot.run(token)
+except Exception:
+    logger.exception("Bot crashed and is exiting — systemd will restart it.")
+    raise
 
-while True:
-    try:
-        logger.info("Starting Discord bot...")
-        bot.run(token)
-
-    except nextcord.errors.HTTPException as e:
-        # Discord rate limit or login failure
-        if "429" in str(e):
-            logger.warning("Hit Discord rate limit (429). Sleeping 10 minutes before retry...")
-            time.sleep(600)   # wait 10 minutes
-        else:
-            logger.error(f"HTTPException during bot.run(): {e}")
-            traceback.print_exc()
-            time.sleep(60)
-
-    except Exception as e:
-        logger.error("Fatal error in bot loop:")
-        traceback.print_exc()
-        logger.info("Restarting bot in 60 seconds...")
-        time.sleep(60)
 
 

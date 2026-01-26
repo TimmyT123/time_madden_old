@@ -325,7 +325,9 @@ bot = commands.Bot(
 
 # Link finder + nickname/team parsing (helpers)
 LINK_RE = re.compile(
-    r"(https?://(?:www\.)?(?:twitch\.tv/[^\s<>]+|youtube\.com/[^\s<>]+|youtu\.be/[^\s<>]+))",
+    r"(https?://(?:www\.)?twitch\.tv/[A-Za-z0-9_]{4,25}"
+    r"|https?://(?:www\.)?youtube\.com/[^\s<>]+"
+    r"|https?://(?:www\.)?youtu\.be/[^\s<>]+)",
     re.IGNORECASE
 )
 
@@ -689,9 +691,21 @@ def opponent_for_team(team: str, matchups: list[list[str]]):
 
 
 def find_stream_link(text: str) -> str | None:
-    if not text: return None
-    m = LINK_RE.search(text)
-    return m.group(1) if m else None
+    if not text:
+        return None
+
+    # Remove Discord embed wrappers <...>
+    cleaned = text.replace("<", "").replace(">", "")
+
+    logger.info(f"[LINK DEBUG] Cleaned message: {repr(cleaned)}")
+
+    m = LINK_RE.search(cleaned)
+    if m:
+        logger.info(f"[LINK DEBUG] Matched link: {m.group(1)}")
+        return m.group(1)
+
+    logger.warning("[LINK DEBUG] No link detected in message.")
+    return None
 
 def canonical_team(s: str) -> str:
     s = (s or "").upper().strip()

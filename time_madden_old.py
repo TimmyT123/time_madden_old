@@ -958,35 +958,31 @@ def _load_wurd_logo(max_width=220):
         logger.warning(f"WURD logo load failed: {e}")
         return None
 
-def _team_block(data: dict, side: str):
+def _team_block_by_name(data: dict, team_name: str):
     """
-    side = 'home' or 'away'
-    Supports both:
-      - old format: data["home"] / data["away"]
-      - new format: data["team1"] / data["team2"]
-    Returns (record, ovr, stars[])
+    Return (record, ovr, stars[]) for the given TEAM NAME
+    Works for both AI and static flyers.
     """
     if not data:
         return None, None, []
 
-    # NEW API format (preferred)
-    if "team1" in data and "team2" in data:
-        t = data["team1"] if side == "home" else data["team2"]
-    # OLD fallback format
-    elif side in data:
-        t = data[side]
-    else:
-        return None, None, []
+    for key in ("team1", "team2"):
+        t = data.get(key)
+        if not t:
+            continue
 
-    record = t.get("record")
-    ovr = t.get("ovr")
-    stars = (
-        t.get("players")          # AI / new API
-        or t.get("top_players")   # older API
-        or []
-    )[:2]  # limit to top 2
+        if t.get("name", "").upper() == team_name.upper():
+            record = t.get("record")
+            ovr = t.get("ovr")
+            stars = (
+                t.get("players")
+                or t.get("top_players")
+                or []
+            )[:2]
 
-    return record, ovr, stars
+            return record, ovr, stars
+
+    return None, None, []
 
 def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str | None, flyer_data=None) -> str:
     W,H = 1280,720
@@ -1018,21 +1014,21 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
 
     # --- TEAM STATS ---
     if flyer_data:
-        h_rec, h_ovr, h_stars = _team_block(flyer_data, "home")
-        a_rec, a_ovr, a_stars = _team_block(flyer_data, "away")
+        t1_rec, t1_ovr, t1_stars = _team_block_by_name(flyer_data, team1)
+        t2_rec, t2_ovr, t2_stars = _team_block_by_name(flyer_data, team2)
 
-        if h_rec and h_ovr:
+        if t1_rec and t1_ovr:
             draw.text(
                 (lcx - 120, cy + 200),
-                f"({h_rec} | OVR {h_ovr})",
+                f"({t1_rec} | OVR {t1_ovr})",
                 font=FONT_BODY,
                 fill="white"
             )
 
-        if a_rec and a_ovr:
+        if t2_rec and t2_ovr:
             draw.text(
                 (rcx - 120, cy + 200),
-                f"({a_rec} | OVR {a_ovr})",
+                f"({t2_rec} | OVR {t2_ovr})",
                 font=FONT_BODY,
                 fill="white"
             )
@@ -1055,8 +1051,8 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
                 y += 34
 
     if flyer_data:
-        draw_stars(lcx - 160, h_stars)
-        draw_stars(rcx - 160, a_stars)
+        draw_stars(lcx - 160, t1_stars)
+        draw_stars(rcx - 160, t2_stars)
 
     # bottom info
     y = 560

@@ -3374,12 +3374,10 @@ async def on_message(msg):
 
 
 
-try:
+if __name__ == "__main__":
     logger.info("Starting Discord bot...")
     bot.run(token)
-except Exception:
-    logger.exception("Bot crashed and is exiting — systemd will restart it.")
-    raise
+
 
 
 

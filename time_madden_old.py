@@ -959,28 +959,20 @@ def _load_wurd_logo(max_width=220):
         return None
 
 def _team_block_by_name(data: dict, team_name: str):
-    """
-    Return (record, ovr, stars[]) for the given TEAM NAME
-    Works for both AI and static flyers.
-    """
     if not data:
         return None, None, []
 
-    for key in ("team1", "team2"):
-        t = data.get(key)
+    for side in ("home", "away"):
+        t = data.get(side)
         if not t:
             continue
 
         if t.get("name", "").upper() == team_name.upper():
-            record = t.get("record")
-            ovr = t.get("ovr")
-            stars = (
-                t.get("players")
-                or t.get("top_players")
-                or []
-            )[:2]
-
-            return record, ovr, stars
+            return (
+                t.get("record"),
+                t.get("ovr"),
+                (t.get("top_players") or [])[:2]
+            )
 
     return None, None, []
 

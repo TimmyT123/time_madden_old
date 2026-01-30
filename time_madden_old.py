@@ -1375,10 +1375,15 @@ async def on_thread_create(thread: nextcord.Thread):
         else None
     )
 
-    season = get_current_season(flyer_data)
-
-    if registry_has(season, week, t1, t2):
-        return
+    if not flyer_data:
+        logger.warning("Thread: flyer_data missing — skipping registry check.")
+    else:
+        season = get_current_season(flyer_data)
+        if registry_has(season, week, t1, t2):
+            logger.info(
+                f"Thread: flyer already exists for season={season} week={week} {t1} vs {t2}"
+            )
+            return
 
     link = None
     try:
@@ -3073,13 +3078,15 @@ async def on_message(msg):
                 else None
             )
 
-            season = get_current_season(flyer_data) if flyer_data else "unknown"
-            if registry_has(season, week or 0, t1, t2):
-                logger.info(
-                    f"game-streams: flyer already exists for season={season} week={week} "
-                    f"{t1} vs {t2}, ignoring repeated link from {msg.author.display_name}."
-                )
-                return
+            if not flyer_data:
+                logger.warning("Skipping registry check — flyer_data missing.")
+            else:
+                season = get_current_season(flyer_data)
+                if registry_has(season, week or 0, t1, t2):
+                    logger.info(
+                        f"Flyer already exists for season={season} week={week} {t1} vs {t2}"
+                    )
+                    return
 
             # build flyer prompt (if possible)
             flyer_prompt = None

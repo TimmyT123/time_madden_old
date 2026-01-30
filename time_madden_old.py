@@ -195,16 +195,33 @@ def load_team_id_mapping():
 FLYER_API_BASE = "http://127.0.0.1:5000/api/flyer/game"
 
 def fetch_flyer_data(home_id: str, away_id: str):
+    url = FLYER_API_BASE
+    params = {"home": home_id, "away": away_id}
+
     try:
-        r = requests.get(
-            FLYER_API_BASE,
-            params={"home": home_id, "away": away_id},
-            timeout=5,
-        )
+        logger.info("[FLYER FETCH] Requesting %s params=%s", url, params)
+
+        r = requests.get(url, params=params, timeout=5)
+        logger.info("[FLYER FETCH] Status code: %s", r.status_code)
+
         r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"[flyer] API error: {e}")
+
+        data = r.json()
+        logger.info("[FLYER FETCH] Raw data: %s", data)
+
+        # 🔐 Minimal validation (do NOT over-validate)
+        if not isinstance(data, dict):
+            logger.warning("[FLYER FETCH] Invalid payload type")
+            return None
+
+        if "home" not in data or "away" not in data:
+            logger.warning("[FLYER FETCH] Missing home/away keys")
+            return None
+
+        return data
+
+    except Exception:
+        logger.exception("[FLYER FETCH] API error")
         return None
 
 from openai import OpenAI

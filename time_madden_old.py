@@ -3107,7 +3107,8 @@ async def on_message(msg):
                     t2=t2,
                     streamer=msg.author.display_name,
                     link=link,
-                    flyer_prompt=flyer_prompt
+                    flyer_prompt=flyer_prompt,
+                    flyer_data=flyer_data
                 )
 
                 logger.info(f"game-streams flyer source: {flyer_source}")

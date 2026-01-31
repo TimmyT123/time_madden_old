@@ -1088,6 +1088,7 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
     if link:
         qr = qrcode.make(link).resize((140, 140))
         canvas.paste(qr, (W - 60 - 140, bottom_y + 10))
+        logger.info(f"[QR LINK VALUE] -> {repr(link)}")
 
     # ---------------- SAVE ----------------
     out_dir = os.path.join(FLYER_OUT_DIR, f"week_{week}")
@@ -1100,7 +1101,9 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
 
 def _caption(week: int | None, t1: str, t2: str, streamer: str, link: str | None) -> str:
     if link:
-        link_line = f"Live: [Watch Stream]({link})"
+        link_line = f"Live: <{link}>"  # Live: [Watch Stream]({link})
+
+        logger.info(f"[CAPTION LINK VALUE] -> {repr(link)}")
     else:
         link_line = "Live: (link pending)"
 
@@ -1122,6 +1125,7 @@ async def post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer, l
             file=File(flyer_path),
             allowed_mentions=AllowedMentions.none()
         )
+        logger.info(f"[FINAL LINK USED IN CAPTION] -> {repr(link)}")
         try:
             await msg.pin()
         except:

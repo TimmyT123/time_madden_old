@@ -204,24 +204,41 @@ def fetch_flyer_data(home_id: str, away_id: str):
         r = requests.get(url, params=params, timeout=5)
         logger.info("[FLYER FETCH] Status code: %s", r.status_code)
 
-        r.raise_for_status()
+        if r.status_code != 200:
+            logger.error("[FLYER FETCH] Non-200 response: %s | Body: %s",
+                         r.status_code, r.text)
+            return None
 
         data = r.json()
         logger.info("[FLYER FETCH] Raw data: %s", data)
 
-        # 🔐 Minimal validation (do NOT over-validate)
+        # 🔎 Validate structure
         if not isinstance(data, dict):
-            logger.warning("[FLYER FETCH] Invalid payload type")
+            logger.error("[FLYER FETCH] Payload is not a dict. Type=%s", type(data))
             return None
 
         if "home" not in data or "away" not in data:
-            logger.warning("[FLYER FETCH] Missing home/away keys")
+            logger.error("[FLYER FETCH] Missing required keys. Keys present: %s",
+                         list(data.keys()))
             return None
 
+        if not data.get("home") or not data.get("away"):
+            logger.error("[FLYER FETCH] Home or Away data is empty.")
+            return None
+
+        logger.info("[FLYER FETCH] Flyer data validated successfully.")
         return data
 
+    except requests.exceptions.Timeout:
+        logger.error("[FLYER FETCH] Request timed out.")
+        return None
+
+    except requests.exceptions.ConnectionError:
+        logger.error("[FLYER FETCH] Connection error — Flask server unreachable.")
+        return None
+
     except Exception:
-        logger.exception("[FLYER FETCH] API error")
+        logger.exception("[FLYER FETCH] Unexpected API error")
         return None
 
 from openai import OpenAI

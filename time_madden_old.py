@@ -994,90 +994,108 @@ def _team_block_by_name(data: dict, team_name: str):
     return None, None, []
 
 def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str | None, flyer_data=None) -> str:
-    W,H = 1280,720
-    prim1, _ = TEAM_COLORS.get(team1, ("#333333","#777777"))
-    prim2, _ = TEAM_COLORS.get(team2, ("#333333","#777777"))
+    W, H = 1280, 720
+
+    prim1, _ = TEAM_COLORS.get(team1, ("#333333", "#777777"))
+    prim2, _ = TEAM_COLORS.get(team2, ("#333333", "#777777"))
+
     canvas = _gradient_bg(prim1, prim2, W, H)
     draw = ImageDraw.Draw(canvas)
 
+    # ---------------- HEADER ----------------
     _draw_header(draw, canvas, week)
 
-    # badges + logos
-    lcx, rcx, cy = W//2 - 260, W//2 + 260, H//2 - 10
+    # ---------------- CENTER BADGES ----------------
+    lcx = W // 2 - 280
+    rcx = W // 2 + 280
+    cy = H // 2 - 40
+
     logo1 = _logo_path_for(team1)
     logo2 = _logo_path_for(team2)
+
     if not logo1 or not logo2:
         raise FileNotFoundError("Missing logo PNG(s) in LOGOS_DIR")
+
     b1 = _badge_with_logo(team1, logo1)
     b2 = _badge_with_logo(team2, logo2)
-    canvas.alpha_composite(b1, (lcx - b1.width//2, cy - b1.height//2))
-    canvas.alpha_composite(b2, (rcx - b2.width//2, cy - b2.height//2))
+
+    canvas.alpha_composite(b1, (lcx - b1.width // 2, cy - b1.height // 2))
+    canvas.alpha_composite(b2, (rcx - b2.width // 2, cy - b2.height // 2))
 
     # VS
-    vs = "VS"; tw, th = draw.textbbox((0,0), vs, font=FONT_HDR)[2:]
-    draw.text((W//2 - tw//2, cy - th//2), vs, fill="white", font=FONT_HDR)
+    vs = "VS"
+    tw, th = draw.textbbox((0, 0), vs, font=FONT_HDR)[2:]
+    draw.text((W // 2 - tw // 2, cy - th // 2), vs, fill="white", font=FONT_HDR)
 
-    # team labels
-    draw.text((lcx - 120, cy + 160), team1, font=FONT_SUB, fill="white")
-    draw.text((rcx - 110, cy + 160), team2, font=FONT_SUB, fill="white")
+    # ---------------- TEAM NAMES ----------------
+    name_y = cy + 170
 
-    # --- TEAM STATS ---
+    def centered_text(x_center, y, text, font):
+        tw, th = draw.textbbox((0, 0), text, font=font)[2:]
+        draw.text((x_center - tw // 2, y), text, fill="white", font=font)
+
+    centered_text(lcx, name_y, team1, FONT_SUB)
+    centered_text(rcx, name_y, team2, FONT_SUB)
+
+    # ---------------- TEAM STATS ----------------
+    stats_y = name_y + 50
+
     if flyer_data:
         t1_rec, t1_ovr, t1_stars = _team_block_by_name(flyer_data, team1)
         t2_rec, t2_ovr, t2_stars = _team_block_by_name(flyer_data, team2)
 
         if t1_rec and t1_ovr:
-            draw.text(
-                (lcx - 120, cy + 200),
-                f"({t1_rec} | OVR {t1_ovr})",
-                font=FONT_BODY,
-                fill="white"
-            )
+            centered_text(lcx, stats_y, f"{t1_rec} | OVR {t1_ovr}", FONT_BODY)
 
         if t2_rec and t2_ovr:
-            draw.text(
-                (rcx - 120, cy + 200),
-                f"({t2_rec} | OVR {t2_ovr})",
-                font=FONT_BODY,
-                fill="white"
-            )
+            centered_text(rcx, stats_y, f"{t2_rec} | OVR {t2_ovr}", FONT_BODY)
 
-    # --- STAR PLAYERS ---
-    star_y = cy + 250
+    # ---------------- STAR PLAYERS ----------------
+    star_y = stats_y + 45
 
-    def draw_stars(x, stars):
+    def draw_stars(center_x, stars):
         y = star_y
-        for p in stars:
+        for p in stars[:2]:
             name = p.get("name")
             pos = p.get("pos")
             if name and pos:
-                draw.text(
-                    (x, y),
-                    f"⭐ {name} ({pos})",
-                    font=FONT_BODY,
-                    fill="white"
-                )
+                text = f"{name} ({pos})"
+                tw, th = draw.textbbox((0, 0), text, font=FONT_BODY)[2:]
+                draw.text((center_x - tw // 2, y), text, fill="white", font=FONT_BODY)
                 y += 34
 
     if flyer_data:
-        draw_stars(lcx - 160, t1_stars)
-        draw_stars(rcx - 160, t2_stars)
+        draw_stars(lcx, t1_stars)
+        draw_stars(rcx, t2_stars)
 
-    # bottom info
-    y = 560
-    canvas.alpha_composite(Image.new("RGBA",(W,H-y),(0,0,0,120)), (0,y))
-    draw.text((60, y+20), f"Streamer: {streamer}", font=FONT_BODY, fill="white")
-    link_text = f"Live: {link}" if link else "Live: (link pending)"
-    draw.text((60, y+64), link_text, font=FONT_BODY, fill="white")
+    # ---------------- BOTTOM BROADCAST BAR ----------------
+    bottom_h = 160
+    bottom_y = H - bottom_h
+
+    canvas.alpha_composite(
+        Image.new("RGBA", (W, bottom_h), (0, 0, 0, 190)),
+        (0, bottom_y)
+    )
+
+    # Streamer
+    draw.text((60, bottom_y + 30), f"Streamer: {streamer}", font=FONT_BODY, fill="white")
+
+    # Live line
+    live_text = "Live • Scan QR Code" if link else "Live: (link pending)"
+    draw.text((60, bottom_y + 75), live_text, font=FONT_BODY, fill="white")
+
+    # QR
     if link:
-        qr = qrcode.make(link).resize((150,150))
-        canvas.paste(qr, (W-60-150, y+2))
+        qr = qrcode.make(link).resize((140, 140))
+        canvas.paste(qr, (W - 60 - 140, bottom_y + 10))
 
-    # save
+    # ---------------- SAVE ----------------
     out_dir = os.path.join(FLYER_OUT_DIR, f"week_{week}")
     os.makedirs(out_dir, exist_ok=True)
+
     path = os.path.join(out_dir, f"{team1}_vs_{team2}.png")
     canvas.convert("RGB").save(path, "PNG")
+
     return path
 
 def _caption(week: int | None, t1: str, t2: str, streamer: str, link: str | None) -> str:

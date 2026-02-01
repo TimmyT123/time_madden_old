@@ -1414,6 +1414,11 @@ async def on_thread_create(thread: nextcord.Thread):
         else None
     )
 
+    if flyer_data:
+        if "home" in flyer_data and "team1" not in flyer_data:
+            flyer_data["team1"] = flyer_data["home"]
+            flyer_data["team2"] = flyer_data["away"]
+
     if not flyer_data:
         logger.warning("Thread: flyer_data missing — skipping registry check.")
     else:
@@ -3116,6 +3121,11 @@ async def on_message(msg):
                 if home_id and away_id
                 else None
             )
+
+            if flyer_data:
+                if "home" in flyer_data and "team1" not in flyer_data:
+                    flyer_data["team1"] = flyer_data["home"]
+                    flyer_data["team2"] = flyer_data["away"]
 
             if not flyer_data:
                 logger.warning("Skipping registry check — flyer_data missing.")

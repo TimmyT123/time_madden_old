@@ -1408,6 +1408,9 @@ async def on_thread_create(thread: nextcord.Thread):
     home_id = TEAM_NAME_TO_ID.get(t1)
     away_id = TEAM_NAME_TO_ID.get(t2)
 
+    logger.info("MATCHUP LOOKUP: %s (%s) vs %s (%s)",
+                t1, home_id, t2, away_id)
+
     flyer_data = (
         fetch_flyer_data(home_id, away_id)
         if home_id and away_id
@@ -3116,6 +3119,9 @@ async def on_message(msg):
             home_id = TEAM_NAME_TO_ID.get(t1)
             away_id = TEAM_NAME_TO_ID.get(t2)
 
+            logger.info("MATCHUP LOOKUP: %s (%s) vs %s (%s)",
+                        t1, home_id, t2, away_id)
+
             flyer_data = (
                 fetch_flyer_data(home_id, away_id)
                 if home_id and away_id
@@ -3137,17 +3143,6 @@ async def on_message(msg):
                     )
                     return
 
-            # build flyer prompt (if possible)
-            flyer_prompt = None
-
-            home_id = TEAM_NAME_TO_ID.get(t1)
-            away_id = TEAM_NAME_TO_ID.get(t2)
-
-            flyer_data = (
-                fetch_flyer_data(home_id, away_id)
-                if home_id and away_id
-                else None
-            )
 
             use_ai = should_use_ai_flyer(week, t1, t2)
 

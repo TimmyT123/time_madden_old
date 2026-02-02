@@ -181,7 +181,11 @@ def load_team_id_mapping():
             team_id = team.get("teamId")
 
             if name and team_id is not None:
-                mapping[name.upper()] = str(team_id)
+                full = name.upper()
+                short = name.upper().split()[-1]   # last word
+
+                mapping[full] = str(team_id)
+                mapping[short] = str(team_id)
 
         TEAM_NAME_TO_ID = mapping
         logger.info(f"Loaded {len(TEAM_NAME_TO_ID)} team ID mappings")
@@ -1404,6 +1408,9 @@ async def on_thread_create(thread: nextcord.Thread):
                 allowed = True
     if not allowed:
         return
+
+    if not TEAM_NAME_TO_ID:
+        load_team_id_mapping()
 
     home_id = TEAM_NAME_TO_ID.get(t1)
     away_id = TEAM_NAME_TO_ID.get(t2)
@@ -3116,6 +3123,10 @@ async def on_message(msg):
             # 🚫 DUPLICATE GUARD:
             # If we already have a flyer for this WEEK + MATCHUP (thread or channel),
             # do NOT post another one – even if they drop the link again later.
+
+            if not TEAM_NAME_TO_ID:
+                load_team_id_mapping()
+
             home_id = TEAM_NAME_TO_ID.get(t1)
             away_id = TEAM_NAME_TO_ID.get(t2)
 

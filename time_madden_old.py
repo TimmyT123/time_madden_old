@@ -866,7 +866,7 @@ def _draw_header(draw, canvas, week: int | None):
         font=FONT_HEADER
     )
 
-def _gradient_bg(left_color: str, right_color: str, W=1280, H=720):
+def _gradient_bg(left_color: str, right_color: str, W=1280, H=960):
     def to_rgb(h): h=h.lstrip("#"); return tuple(int(h[i:i+2],16) for i in (0,2,4))
     c1 = to_rgb(left_color); c2 = to_rgb(right_color)
     im = Image.new("RGB", (W,H), "black").convert("RGBA")
@@ -1011,7 +1011,7 @@ def _team_block_by_name(data: dict, team_name: str):
     return None, None, []
 
 def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str | None, flyer_data=None) -> str:
-    W, H = 1280, 720
+    W, H = 1280, 960
 
     prim1, _ = TEAM_COLORS.get(team1, ("#333333", "#777777"))
     prim2, _ = TEAM_COLORS.get(team2, ("#333333", "#777777"))

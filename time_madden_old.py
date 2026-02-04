@@ -177,12 +177,12 @@ def load_team_id_mapping():
         mapping = {}
 
         for team in teams:
-            name = team.get("displayName")
-            team_id = team.get("teamId")
+            name = team.get("name") or team.get("displayName")
+            team_id = team.get("teamId") or team.get("id")
 
             if name and team_id is not None:
                 full = name.upper()
-                short = name.upper().split()[-1]   # last word
+                short = name.upper().split()[-1]
 
                 mapping[full] = str(team_id)
                 mapping[short] = str(team_id)

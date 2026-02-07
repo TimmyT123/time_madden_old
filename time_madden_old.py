@@ -3029,6 +3029,15 @@ async def trigger_companion_export():
         )
 # ---------------------------------------------------------------
 
+async def trigger_gg_export_after_delay(delay_sec: int = 60):
+    await asyncio.sleep(delay_sec)
+
+    chan = bot.get_channel(GG_ALERT_CHANNEL_ID)
+    if chan:
+        await chan.send("[WURD GG] 📡 WURD_WEEK_EXPORT")
+        logger.info("GG-based export trigger sent after 60 seconds.")
+# ---------------------------------------------------------------
+
 
 # Event handler for processing incoming messages
 @bot.event
@@ -3251,6 +3260,9 @@ async def on_message(msg):
 
                     if sent_ok:
                         _last_gg_alert_ts = now
+
+                        # 🚀 Schedule GG-based export in 60 seconds
+                        asyncio.create_task(trigger_gg_export_after_delay(60))
                     else:
                         logger.warning("GG alert not sent (no channel/DM path worked).")
                 else:

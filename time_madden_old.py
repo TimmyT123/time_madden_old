@@ -1144,16 +1144,12 @@ async def post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer, l
             content=("**Heads-up:** I don’t have `Mention Everyone` permission here.\n\n"
                      + _caption(week,t1,t2,streamer,link).replace("@everyone\n","")),
             file=File(flyer_path),
-            allowed_mentions=AllowedMentions.none()
+            allowed_mentions=AllowedMentions.none(),
+            suppress_embeds=True
         )
         logger.info(f"[FINAL LINK USED IN CAPTION] -> {repr(link)}")
         try:
             await msg.pin()
-        except:
-            pass
-        # ⬇️ suppress the URL preview
-        try:
-            await msg.edit(suppress=True)
         except:
             pass
         return msg
@@ -1161,15 +1157,11 @@ async def post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer, l
     msg = await thread.send(
         content=_caption(week,t1,t2,streamer,link),
         file=File(flyer_path),
-        allowed_mentions=EVERYONE_MENTIONS
+        allowed_mentions=EVERYONE_MENTIONS,
+        suppress_embeds=True
     )
     try:
         await msg.pin()
-    except:
-        pass
-    # ⬇️ suppress the URL preview
-    try:
-        await msg.edit(suppress=True)
     except:
         pass
     return msg
@@ -1190,13 +1182,9 @@ async def watch_first_link_and_edit(thread, author_id: int, posted_msg_id: int, 
         msg = await thread.fetch_message(posted_msg_id)
         await msg.edit(
             content=_caption(week, t1, t2, streamer, link),
-            allowed_mentions=AllowedMentions.none()
+            allowed_mentions=AllowedMentions.none(),
+            suppress_embeds=True
         )
-        # ⬇️ make sure the edited message also has no preview
-        try:
-            await msg.edit(suppress=True)
-        except:
-            pass
     except asyncio.TimeoutError:
         pass
     except Exception as e:

@@ -3228,7 +3228,7 @@ async def on_message(msg):
                 if now - _last_gg_alert_ts >= GG_COOLDOWN_SEC:
                     # Build a nice alert with a jump link
                     alert_text = (
-                        f"[WURD GG] GG detected in #{msg.channel.name} by {msg.author.display_name}\n"
+                        f"GG detected in #{msg.channel.name} by {msg.author.display_name}\n"
                         f"Jump: {msg.jump_url}"
                     )
 

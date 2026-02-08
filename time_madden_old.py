@@ -72,6 +72,10 @@ file_handler = RotatingFileHandler('bot.log', maxBytes=5 * 1024 * 1024, backupCo
 GG_COOLDOWN_SEC = 600  # 10 minutes
 _last_gg_alert_ts = 0.0
 
+EXPORT_RETRY_IN_PROGRESS = False
+EXPORT_MAX_ATTEMPTS = 5
+EXPORT_RETRY_DELAY = 120  # seconds
+
 GG_WORD_RE = re.compile(r"\bggs?\b", re.IGNORECASE)
 
 # Use YOUR provided IDs from .env (see sample below)
@@ -3015,15 +3019,56 @@ async def trigger_companion_export():
         await chan.send(
             f"[WURD GG] 📡 WURD_WEEK_EXPORT\n"
         )
+
 # ---------------------------------------------------------------
 
-async def trigger_gg_export_after_delay(delay_sec: int = 60):
-    await asyncio.sleep(delay_sec)
+def get_stats_hash():
+    try:
+        r = requests.get("http://127.0.0.1:5000/stats-hash", timeout=5)
+        if r.status_code == 200:
+            return r.json().get("hash")
+    except Exception as e:
+        logger.warning(f"Could not get stats hash: {e}")
+    return None
 
-    chan = bot.get_channel(GG_ALERT_CHANNEL_ID)
-    if chan:
-        await chan.send("[WURD GG] 📡 WURD_WEEK_EXPORT")
-        logger.info("GG-based export trigger sent after 60 seconds.")
+async def retry_export_until_changed():
+    global EXPORT_RETRY_IN_PROGRESS
+
+    if EXPORT_RETRY_IN_PROGRESS:
+        logger.info("Export retry already in progress. Skipping new loop.")
+        return
+
+    EXPORT_RETRY_IN_PROGRESS = True
+    logger.info("Starting export retry loop.")
+
+    try:
+        previous_hash = get_stats_hash()
+
+        for attempt in range(EXPORT_MAX_ATTEMPTS):
+            chan = bot.get_channel(GG_ALERT_CHANNEL_ID)
+            if chan:
+                await chan.send("[WURD GG] 📡 WURD_WEEK_EXPORT")
+                logger.info(f"Export attempt {attempt + 1} sent.")
+
+            await asyncio.sleep(EXPORT_RETRY_DELAY)
+
+            new_hash = get_stats_hash()
+
+            if new_hash and (previous_hash is None or new_hash != previous_hash):
+                logger.info("New stats detected. Stopping retry loop.")
+                return
+
+            logger.info("Stats unchanged. Retrying...")
+
+        logger.warning("Max export attempts reached. No stat change detected.")
+
+    except Exception as e:
+        logger.error(f"Retry export error: {e}")
+
+    finally:
+        EXPORT_RETRY_IN_PROGRESS = False
+        logger.info("Export retry loop finished.")
+
 # ---------------------------------------------------------------
 
 
@@ -3250,7 +3295,7 @@ async def on_message(msg):
                         _last_gg_alert_ts = now
 
                         # 🚀 Schedule GG-based export in 60 seconds
-                        asyncio.create_task(trigger_gg_export_after_delay(60))
+                        asyncio.create_task(retry_export_until_changed())
                     else:
                         logger.warning("GG alert not sent (no channel/DM path worked).")
                 else:

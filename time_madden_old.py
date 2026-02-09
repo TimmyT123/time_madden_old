@@ -1126,8 +1126,10 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
 
 def _caption(week: int | None, t1: str, t2: str, streamer: str, link: str | None) -> str:
     if link:
-        link_line = f"Live: <{link}>"  # Live: [Watch Stream]({link})
 
+        link_line = f"Live: {link}"  # Live: [Watch Stream]({link})
+
+        logger.info(f"Caption will contain link: {repr(link_line)}")
         logger.info(f"[CAPTION LINK VALUE] -> {repr(link)}")
     else:
         link_line = "Live: (link pending)"

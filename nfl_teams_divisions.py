@@ -32,5 +32,5 @@ nfl_teams = {
     "Browns": "AFC North",
     "Jaguars": "AFC South",
     "Raiders": "AFC West",
-    "Chargers": "AFC West"
+    "Dragons": "AFC West"
 }

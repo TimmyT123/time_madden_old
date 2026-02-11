@@ -88,6 +88,30 @@ def save_current_index(index):
     except Exception as e:
         print(f"Error saving state: {e}")
 
+# === Save/Load Delay ===
+def load_saved_delay():
+    try:
+        with open(SAVE_FILE, "r") as f:
+            data = json.load(f)
+            return data.get(f"{BOOK_ID}_delay", delay_typing)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return delay_typing
+
+
+def save_current_delay(delay_value):
+    try:
+        data = {}
+        if os.path.exists(SAVE_FILE):
+            with open(SAVE_FILE, "r") as f:
+                data = json.load(f)
+
+        data[f"{BOOK_ID}_delay"] = delay_value
+
+        with open(SAVE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"Error saving delay: {e}")
+
 
 # === Quiz Helpers ===
 _sentence_splitter = re.compile(r"(?<=[.!?])\s+")
@@ -296,18 +320,41 @@ if __name__ == "__main__":
     dialog_root = tk.Tk()
     dialog_root.withdraw()
 
-    # Mode picker
-    choice = simpledialog.askstring(
-        title="Select Mode",
-        prompt="Press '1' for Typing (slower), '2' for Speaking, or '3' for Reading (fast):",
+    # Load last used delay
+    last_delay = load_saved_delay()
+
+    # Suggested presets
+    suggestion = simpledialog.askstring(
+        title="Delay Setup",
+        prompt=(
+            f"Last delay was: {last_delay} ms\n\n"
+            "Suggested presets:\n"
+            "1 = Typing (~150 ms)\n"
+            "2 = Speaking (~50 ms)\n"
+            "3 = Reading (~25 ms)\n\n"
+            "Enter 1, 2, 3 — or type a custom delay in milliseconds:"
+        ),
         parent=dialog_root
     )
-    if choice == '2':
-        delay = delay_speaking; mode_name = 'Speaking'
-    elif choice == '3':
-        delay = delay_reading;  mode_name = 'Reading'
+
+    if suggestion is None:
+        delay = last_delay  # User pressed cancel
+    elif suggestion == '1':
+        delay = delay_typing
+    elif suggestion == '2':
+        delay = delay_speaking
+    elif suggestion == '3':
+        delay = delay_reading
     else:
-        delay = delay_typing;   mode_name = 'Typing'
+        try:
+            delay = max(1, int(suggestion))  # prevent zero or negative delays
+        except:
+            delay = last_delay
+
+    # Save selected delay
+    save_current_delay(delay)
+
+    mode_name = f"{delay} ms"
 
     # Load text and compute pages
     text = extract_text_from_epub(EPUB_PATH)

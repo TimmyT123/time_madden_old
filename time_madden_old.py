@@ -1367,6 +1367,15 @@ def normalize_matchup_with_learned(t1: str | None, t2: str | None, author=None) 
         t1, t2 = order_by_advance(t1, t2)
     return t1, t2
 
+MACRODROID_ADVANCE_URL = "https://trigger.macrodroid.com/0173acce-c77b-4627-9c87-25fb2f03d580/wurd_advance"
+
+def trigger_macrodroid_advance():
+    try:
+        r = requests.get(MACRODROID_ADVANCE_URL, timeout=5)
+        logger.info(f"MacroDroid webhook sent. Status: {r.status_code}")
+    except Exception as e:
+        logger.error(f"MacroDroid webhook failed: {e}")
+
 
 # The trigger: on_thread_create (new block)
 @bot.event
@@ -3016,11 +3025,7 @@ async def safe_async_sleep(sec: float):
 async def trigger_companion_export():
     await asyncio.sleep(300)
 
-    chan = bot.get_channel(GG_ALERT_CHANNEL_ID)
-    if chan:
-        await chan.send(
-            f"[WURD GG] 📡 WURD_WEEK_EXPORT\n"
-        )
+    trigger_macrodroid_advance()
 
 # ---------------------------------------------------------------
 
@@ -3047,10 +3052,8 @@ async def retry_export_until_changed():
         previous_hash = get_stats_hash()
 
         for attempt in range(EXPORT_MAX_ATTEMPTS):
-            chan = bot.get_channel(GG_ALERT_CHANNEL_ID)
-            if chan:
-                await chan.send("[WURD GG] 📡 WURD_WEEK_EXPORT")
-                logger.info(f"Export attempt {attempt + 1} sent.")
+            trigger_macrodroid_advance()
+            logger.info(f"Export attempt {attempt + 1} sent.")
 
             await asyncio.sleep(EXPORT_RETRY_DELAY)
 

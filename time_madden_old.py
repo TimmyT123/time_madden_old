@@ -136,6 +136,7 @@ TEAM_COLORS = {
 GAMES_OF_THE_WEEK = {
     5: [("BILLS", "CHIEFS")],
     12: [("PACKERS", "BEARS")],
+    10: [("RAIDERS", "DOLPHINS")],
     20: [("49ERS", "EAGLES")],   # example playoff still fine
 }
 

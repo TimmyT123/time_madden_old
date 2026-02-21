@@ -130,28 +130,15 @@ TEAM_COLORS = {
     "COMMANDERS":  ("#5A1414", "#FFB612"),
 }
 
-# Manually maintained list of GOTW matchups for the week
-# Format: { week: [("TEAM1","TEAM2"), ...] }
 
-GAMES_OF_THE_WEEK = {
-    5: [("BILLS", "CHIEFS")],
-    12: [("PACKERS", "BEARS")],
-    10: [("RAIDERS", "DOLPHINS")],
-    20: [("49ERS", "EAGLES")],   # example playoff still fine
-}
+# =========================
+# GAMES OF THE WEEK SYSTEM
+# =========================
 
-def is_game_of_the_week(week: int | None, t1: str, t2: str) -> bool:
-    if not week:
-        return False
+GOTW_CONFIG_FILE = "data/gotw_config.json"
+GOTW_STATE_FILE = "data/gotw_state.json"
 
-    games = GAMES_OF_THE_WEEK.get(week, [])
-    pair = tuple(sorted([t1, t2]))
-
-    for a, b in games:
-        if tuple(sorted([a, b])) == pair:
-            return True
-
-    return False
+_current_gotw_pairs = set()
 
 PLAYOFF_WEEKS = {19, 20, 21, 23}   # WC, Div, Conf, Super Bowl
 
@@ -163,14 +150,205 @@ def should_use_ai_flyer(week: int | None, t1: str, t2: str) -> bool:
     if week in PLAYOFF_WEEKS:
         return True
 
-    # Regular season ONLY if designated Game of the Week
-    if is_game_of_the_week(week, t1, t2):
+    pair = tuple(sorted((t1, t2)))
+    if pair in _current_gotw_pairs:
         return True
 
     return False
 
 FLYER_REGISTRY = "data/flyers.json"  # de-dupe store
 os.makedirs(os.path.dirname(FLYER_OUT_DIR), exist_ok=True)
+
+
+def load_gotw_config():
+    default_config = {
+        "enabled": True,
+        "start_week": 5,
+        "min_games": 2,
+        "max_games": 5,
+        "delay_seconds": 480
+    }
+
+    try:
+        if os.path.exists(GOTW_CONFIG_FILE):
+            with open(GOTW_CONFIG_FILE, "r") as f:
+                loaded = json.load(f)
+                default_config.update(loaded)
+    except Exception as e:
+        print(f"[GOTW] Failed to load config: {e}")
+
+    return default_config
+
+
+def load_gotw_state():
+    if os.path.exists(GOTW_STATE_FILE):
+        try:
+            with open(GOTW_STATE_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+
+def save_gotw_state(state):
+    try:
+        with open(GOTW_STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception as e:
+        print(f"[GOTW] Failed to save state: {e}")
+
+
+async def select_games_of_the_week():
+    global _current_gotw_pairs
+
+    config = load_gotw_config()
+
+    if not config.get("enabled", True):
+        print("[GOTW] Disabled in config.")
+        return
+
+    if _current_week is None:
+        print("[GOTW] No current week loaded yet.")
+        return
+
+    if _current_week < config.get("start_week", 5):
+        print("[GOTW] Week below start threshold.")
+        return
+
+    if _current_week in PLAYOFF_WEEKS:
+        print("[GOTW] Skipping playoffs.")
+        return
+
+    if not _current_pairs:
+        print("[GOTW] No matchups loaded yet.")
+        return
+
+    state = load_gotw_state()
+    if state.get("last_week_posted") == _current_week:
+        print("[GOTW] Already posted for this week.")
+        return
+
+    # ---- fetch standings / records ----
+    try:
+        resp = requests.get(f"{API_BASE_URL}/teams", timeout=5)
+        resp.raise_for_status()
+        teams_data = resp.json()
+    except Exception as e:
+        print(f"[GOTW] Failed to fetch standings: {e}")
+        return
+
+    team_records = {}
+    for team in teams_data:
+        wins = team.get("wins", 0)
+        losses = team.get("losses", 0)
+        ties = team.get("ties", 0)
+        games = wins + losses + ties
+        pct = wins / games if games > 0 else 0
+        team_records[(team.get("name") or "").upper()] = (wins, losses, pct)
+
+    # ---- resolve team->member from guild ----
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        print("[GOTW] Guild not found.")
+        return
+
+    team_to_member = {}
+    for m in guild.members:
+        if getattr(m, "bot", False):
+            continue
+        t = extract_team_from_nick(m.display_name or "")
+        if t:
+            team_to_member[t] = m
+
+    ap_list = load_ap_users()
+
+    scored_games = []
+
+    for teamA, teamB in _current_pairs:
+        # ensure canonical uppercase
+        teamA = canonical_team(teamA)
+        teamB = canonical_team(teamB)
+
+        mA = team_to_member.get(teamA)
+        mB = team_to_member.get(teamB)
+
+        # must be user-user
+        if not mA or not mB:
+            continue
+
+        # skip if either user is on AP
+        if is_on_ap(mA.id, ap_list) or is_on_ap(mB.id, ap_list):
+            continue
+
+        recA = team_records.get(teamA)
+        recB = team_records.get(teamB)
+        if not recA or not recB:
+            continue
+
+        score = 0
+
+        # both .500+ => good matchup
+        if recA[2] >= 0.5 and recB[2] >= 0.5:
+            score += 2
+
+        # both "positive" teams => stronger matchup
+        if (recA[0] - recA[1]) >= 2 and (recB[0] - recB[1]) >= 2:
+            score += 2
+
+        # extra bump if both over .500
+        if recA[2] > 0.5 and recB[2] > 0.5:
+            score += 1
+
+        scored_games.append((score, teamA, teamB))
+
+    scored_games.sort(reverse=True)
+
+    max_games = int(config.get("max_games", 5))
+    min_games = int(config.get("min_games", 2))
+
+    selected = scored_games[:max_games]
+    if len(selected) < min_games:
+        selected = scored_games[:min_games]
+
+    _current_gotw_pairs = set(tuple(sorted((a, b))) for _, a, b in selected)
+
+    if not _current_gotw_pairs:
+        print("[GOTW] No eligible games found.")
+        return
+
+    await post_gotw_message()
+
+    save_gotw_state({"last_week_posted": _current_week})
+
+
+async def post_gotw_message():
+    channel = bot.get_channel(GAME_STREAMS_CHANNEL_ID)
+    if not channel:
+        print("[GOTW] game-streams channel not found.")
+        return
+
+    lines = [
+        "🏆━━━━━━━━━━━━━━━━━━━━━━",
+        f"WURD • WEEK {_current_week}",
+        "GAMES OF THE WEEK",
+        "━━━━━━━━━━━━━━━━━━━━━━🏆",
+        ""
+    ]
+
+    for teamA, teamB in sorted(_current_gotw_pairs):
+        lines.append(f"🔥 {teamA} vs {teamB}")
+
+    lines.append("")
+    lines.append("🎥 These games will receive AI flyers if broadcasted.")
+
+    await channel.send("\n".join(lines))
+
+async def schedule_games_of_the_week():
+    config = load_gotw_config()
+    delay = config.get("delay_seconds", 480)
+    await asyncio.sleep(delay)
+    await select_games_of_the_week()
+
 
 def load_team_id_mapping():
     global TEAM_NAME_TO_ID
@@ -3478,6 +3656,8 @@ async def on_message(msg):
                     await create_user_user_channels(guild)  # create new matchup forums
 
                     build_week_cache_from_current_state()
+
+                    asyncio.create_task(schedule_games_of_the_week())
 
                     # 🚀 Start 5-minute delayed Companion App export
                     logger.info("Week advance complete — scheduling Companion export in 5 minutes")

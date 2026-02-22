@@ -380,6 +380,7 @@ def load_team_id_mapping():
 #--------------chatgpt flyers--------------
 
 FLYER_API_BASE = "http://127.0.0.1:5000/api/flyer/game"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:5000/api")
 
 def fetch_flyer_data(home_id: str, away_id: str):
     url = FLYER_API_BASE

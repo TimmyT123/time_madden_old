@@ -3621,12 +3621,12 @@ async def on_message(msg):
 
                         if is_preseason:
                             target = now_az + timedelta(hours=24)  # 1 day for preseason
-                            timing_note = "This is the preseason 24-hour target time (around 6 PM Arizona)."
+                            timing_note = "This is the preseason 24-hour target time (around 5 PM Arizona)."
                         else:
                             target = now_az + timedelta(hours=48)  # 2 days for season
-                            timing_note = "This is the normal 48-hour target time (around 6 PM Arizona)."
+                            timing_note = "This is the normal 48-hour target time (around 5 PM Arizona)."
 
-                        advance = target.replace(hour=18, minute=0, second=0, microsecond=0)
+                        advance = target.replace(hour=17, minute=0, second=0, microsecond=0)
 
                         advance_block = (
                             "\n\n⏰ **Advance Time**\n"

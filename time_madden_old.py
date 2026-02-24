@@ -285,23 +285,23 @@ async def select_games_of_the_week():
         if not recA or not recB:
             continue
 
-        score = 0
+        # --- ADVANCED MATCHUP RANKING SYSTEM ---
 
-        # both .500+ => good matchup
-        if recA[2] >= 0.5 and recB[2] >= 0.5:
-            score += 2
+        pctA = recA[2]
+        pctB = recB[2]
 
-        # both "positive" teams => stronger matchup
-        if (recA[0] - recA[1]) >= 2 and (recB[0] - recB[1]) >= 2:
-            score += 2
+        # Combined team quality (strong teams rise to top)
+        combined_strength = pctA + pctB
 
-        # extra bump if both over .500
-        if recA[2] > 0.5 and recB[2] > 0.5:
-            score += 1
+        # Competitive balance (closer records score higher)
+        closeness = 1 - abs(pctA - pctB)
+
+        # Weighted score
+        score = (combined_strength * 70) + (closeness * 30)
 
         scored_games.append((score, teamA, teamB))
 
-    scored_games.sort(reverse=True)
+    scored_games.sort(key=lambda x: x[0], reverse=True)
 
     max_games = int(config.get("max_games", 5))
     min_games = int(config.get("min_games", 2))

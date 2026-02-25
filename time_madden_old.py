@@ -224,8 +224,17 @@ async def select_games_of_the_week():
         return
 
     state = load_gotw_state()
+
     if state.get("last_week_posted") == _current_week:
         print("[GOTW] Already posted for this week.")
+
+        # Restore pairs
+        saved_pairs = state.get("pairs", [])
+        _current_gotw_pairs.clear()
+        for p in saved_pairs:
+            _current_gotw_pairs.add(tuple(sorted(p)))
+
+        print(f"[GOTW] Restored {len(_current_gotw_pairs)} GOTW pairs from state.")
         return
 
     # ---- fetch standings / records ----
@@ -318,7 +327,10 @@ async def select_games_of_the_week():
 
     await post_gotw_message()
 
-    save_gotw_state({"last_week_posted": _current_week})
+    save_gotw_state({
+        "last_week_posted": _current_week,
+        "pairs": [list(p) for p in _current_gotw_pairs]
+    })
 
 
 async def post_gotw_message():
@@ -3070,6 +3082,19 @@ async def on_ready():
             logger.info("Week cache found on disk — flyer system ready")
         else:
             logger.warning("No week cache found — AI flyers will require seeding")
+
+        # Restore GOTW pairs on startup
+        try:
+            state = load_gotw_state()
+            if state and state.get("last_week_posted") == _current_week:
+                _current_gotw_pairs.clear()
+                saved_pairs = state.get("pairs", [])
+                for p in saved_pairs:
+                    _current_gotw_pairs.add(tuple(sorted(p)))
+                logger.info(f"[GOTW] Restored {len(_current_gotw_pairs)} GOTW pairs on startup.")
+        except Exception as e:
+            logger.warning(f"GOTW restore on startup failed: {e}")
+
     except Exception as e:
         logger.warning(f"Could not restore advance state: {e}")
 

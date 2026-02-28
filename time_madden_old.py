@@ -417,7 +417,8 @@ async def pre_advance_reminder_loop():
 
             reminder_time = target - timedelta(hours=23, minutes=30)
 
-            if now >= reminder_time and not pre_sent:
+            # Only fire if we are BETWEEN reminder time and advance time
+            if reminder_time <= now < target and not pre_sent:
                 guild = bot.get_guild(GUILD_ID)
                 category = guild.get_channel(CATEGORY_ID)
 

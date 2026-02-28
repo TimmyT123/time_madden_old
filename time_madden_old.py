@@ -390,9 +390,6 @@ async def rebuild_channel_activity():
 
         channel_activity_tracker[ch.id] = tracker
 
-        #  temp DEBUG of printing the members in for the 24 hour reminder
-        print(f"[REBUILD] {ch.name} -> {tracker['member_ids']}")
-
         # 🔎 Rebuild response set from message history
         try:
             async for msg in ch.history(limit=100):

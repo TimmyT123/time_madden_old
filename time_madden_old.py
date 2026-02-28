@@ -361,6 +361,104 @@ async def schedule_games_of_the_week():
     await asyncio.sleep(delay)
     await select_games_of_the_week()
 
+async def rebuild_channel_activity():
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    category = guild.get_channel(CATEGORY_ID)
+    if not category or not isinstance(category, nextcord.CategoryChannel):
+        return
+
+    for ch in category.text_channels:
+        tracker = channel_activity_tracker.get(ch.id)
+
+        if not tracker:
+            # Recreate tracker from permissions
+            member_ids = [
+                m.id for m in ch.members
+                if not m.bot and m.guild_permissions.read_messages
+            ]
+            tracker = {
+                "created_at": datetime.now(pytz.utc),
+                "member_ids": member_ids,
+                "responses": set()
+            }
+            channel_activity_tracker[ch.id] = tracker
+
+        try:
+            async for msg in ch.history(limit=100):
+                if msg.author.id in tracker["member_ids"]:
+                    tracker["responses"].add(msg.author.id)
+        except Exception as e:
+            logger.warning(f"History scan failed for {ch.name}: {e}")
+
+async def pre_advance_reminder_loop():
+    await asyncio.sleep(15)
+
+    while True:
+        try:
+            st = _load_week_state()
+            week = int(st.get("week", 0))
+            matchups = st.get("matchups", [])
+            pre_sent = st.get("pre_reminder_sent", False)
+
+            # Only run reminder for REGULAR SEASON weeks (1–18)
+            if not week or not matchups or week < 1 or week > 18:
+                await asyncio.sleep(60)
+                continue
+
+            tz = pytz.timezone("US/Arizona")
+            now = datetime.now(tz)
+
+            target = now.replace(hour=17, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+
+            reminder_time = target - timedelta(hours=23, minutes=30)
+
+            if now >= reminder_time and not pre_sent:
+                guild = bot.get_guild(GUILD_ID)
+                category = guild.get_channel(CATEGORY_ID)
+
+                for ch in category.text_channels:
+                    tracker = channel_activity_tracker.get(ch.id)
+                    if not tracker:
+                        continue
+
+                    non_responders = [
+                        mid for mid in tracker["member_ids"]
+                        if mid not in tracker["responses"]
+                    ]
+
+                    if not non_responders:
+                        continue
+
+                    mentions = " ".join(
+                        guild.get_member(mid).mention
+                        for mid in non_responders
+                        if guild.get_member(mid)
+                    )
+
+                    await ch.send(
+                        f"🔔 **24-Hour Scheduling Reminder**\n"
+                        f"{mentions}\n"
+                        "Advance is tomorrow at **5:00 PM AZ**.\n"
+                        "Please confirm scheduling.\n"
+                        "Failure to communicate may result in AP status.",
+                        allowed_mentions=AllowedMentions(users=True)
+                    )
+
+                    await asyncio.sleep(1.2)
+
+                _save_week_state(week, matchups, pre_sent=True)
+
+            await asyncio.sleep(60)
+
+        except Exception as e:
+            logger.warning(f"pre_advance_reminder_loop error: {e}")
+            await asyncio.sleep(120)
+
 
 def load_team_id_mapping():
     global TEAM_NAME_TO_ID
@@ -865,15 +963,23 @@ def _parse_advance_block(text: str):
 def _load_week_state():
     try:
         with open(WEEK_STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            # ensure new field exists
+            if "pre_reminder_sent" not in data:
+                data["pre_reminder_sent"] = False
+            return data
     except FileNotFoundError:
-        return {"week": 0, "matchups": []}  # matchups: list of [TEAM_A, TEAM_B]
+        return {"week": 0, "matchups": [], "pre_reminder_sent": False}
     except Exception:
-        return {"week": 0, "matchups": []}
+        return {"week": 0, "matchups": [], "pre_reminder_sent": False}
 
-def _save_week_state(week: int, matchups: list[list[str]]):
+def _save_week_state(week: int, matchups: list[list[str]], pre_sent: bool = False):
     with open(WEEK_STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"week": week, "matchups": matchups}, f, indent=2)
+        json.dump({
+            "week": week,
+            "matchups": matchups,
+            "pre_reminder_sent": pre_sent
+        }, f, indent=2)
 
 def get_current_week_and_matchups():
     st = _load_week_state()
@@ -2528,7 +2634,7 @@ async def seed_advance(ctx, *, block: str):
     _current_pairs = pairs
     _current_matchups = mapping
 
-    _save_week_state(wk, [[L, R] for (L, R) in pairs])
+    _save_week_state(wk, [[L, R] for (L, R) in pairs], pre_sent=False)
     # write flyer cache
     build_week_cache_from_current_state()
     await ctx.reply(f"Seeded WEEK {wk} with {len(pairs)} matchups. No messages posted.")
@@ -3053,6 +3159,9 @@ async def logs_cmd(ctx, *, rest: str = ""):
 async def on_ready():
     load_team_id_mapping()
 
+    await rebuild_channel_activity()
+    bot.loop.create_task(pre_advance_reminder_loop())
+
     try:
         guild = bot.get_guild(GUILD_ID)
         if not guild:
@@ -3329,7 +3438,7 @@ async def on_message(msg):
                 _current_matchups = mapping
 
                 # ⬇️ persist to disk so it survives restarts
-                _save_week_state(wk, [[L, R] for (L, R) in pairs])
+                _save_week_state(wk, [[L, R] for (L, R) in pairs], pre_sent=False)
                 logger.info(f"Advance learned & saved: WEEK={wk}, games={len(pairs)}")
     except Exception as e:
         logger.warning(f"advance parse failed: {e}")

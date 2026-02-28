@@ -371,24 +371,29 @@ async def rebuild_channel_activity():
         return
 
     for ch in category.text_channels:
-        tracker = channel_activity_tracker.get(ch.id)
+        # 🔥 Always rebuild tracker from explicit member overwrites
+        member_ids = []
 
-        if not tracker:
-            # ✅ Recreate tracker ONLY from explicit user overwrites (not Admin role access)
-            member_ids = []
-            for target, overwrite in ch.overwrites.items():
-                if isinstance(target, nextcord.Member):
-                    # If read_messages is explicitly allowed for this member
-                    if overwrite.read_messages is True and not target.bot:
-                        member_ids.append(target.id)
+        for target, overwrite in ch.overwrites.items():
+            if (
+                isinstance(target, nextcord.Member)
+                and overwrite.read_messages is True
+                and not target.bot
+            ):
+                member_ids.append(target.id)
 
-            tracker = {
-                "created_at": datetime.now(pytz.utc),
-                "member_ids": member_ids,
-                "responses": set()
-            }
-            channel_activity_tracker[ch.id] = tracker
+        tracker = {
+            "created_at": datetime.now(pytz.utc),
+            "member_ids": member_ids,
+            "responses": set()
+        }
 
+        channel_activity_tracker[ch.id] = tracker
+
+        #  temp DEBUG of printing the members in for the 24 hour reminder
+        print(f"[REBUILD] {ch.name} -> {tracker['member_ids']}")
+
+        # 🔎 Rebuild response set from message history
         try:
             async for msg in ch.history(limit=100):
                 if msg.author.id in tracker["member_ids"]:

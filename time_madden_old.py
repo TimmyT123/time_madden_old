@@ -374,11 +374,14 @@ async def rebuild_channel_activity():
         tracker = channel_activity_tracker.get(ch.id)
 
         if not tracker:
-            # Recreate tracker from permissions
-            member_ids = [
-                m.id for m in ch.members
-                if not m.bot and m.guild_permissions.read_messages
-            ]
+            # ✅ Recreate tracker ONLY from explicit user overwrites (not Admin role access)
+            member_ids = []
+            for target, overwrite in ch.overwrites.items():
+                if isinstance(target, nextcord.Member):
+                    # If read_messages is explicitly allowed for this member
+                    if overwrite.read_messages is True and not target.bot:
+                        member_ids.append(target.id)
+
             tracker = {
                 "created_at": datetime.now(pytz.utc),
                 "member_ids": member_ids,

@@ -299,14 +299,27 @@ async def select_games_of_the_week():
         pctA = recA[2]
         pctB = recB[2]
 
-        # Combined team quality (strong teams rise to top)
-        combined_strength = pctA + pctB
+        # Base components
+        combined_strength = pctA + pctB  # 0 – 2
+        closeness = 1 - abs(pctA - pctB)  # 0 – 1
 
-        # Competitive balance (closer records score higher)
-        closeness = 1 - abs(pctA - pctB)
+        # Bonus: both winning records
+        both_winning = 1 if (pctA >= 0.5 and pctB >= 0.5) else 0
 
-        # Weighted score
-        score = (combined_strength * 70) + (closeness * 30)
+        # Bonus: elite matchup (both above .650)
+        elite_matchup = 1 if (pctA >= 0.65 and pctB >= 0.65) else 0
+
+        # Penalty: both losing
+        both_losing = 1 if (pctA < 0.5 and pctB < 0.5) else 0
+
+        # Final weighted score
+        score = (
+                (combined_strength * 60) +
+                (closeness * 25) +
+                (both_winning * 15) +
+                (elite_matchup * 10) -
+                (both_losing * 20)
+        )
 
         scored_games.append((score, teamA, teamB))
 

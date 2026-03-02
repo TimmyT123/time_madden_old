@@ -198,6 +198,16 @@ def save_gotw_state(state):
         print(f"[GOTW] Failed to save state: {e}")
 
 
+def same_division_check(teamA, teamB):
+    # Convert canonical uppercase names to proper case
+    teamA_proper = teamA.title()
+    teamB_proper = teamB.title()
+
+    divA = nfl_teams.get(teamA_proper)
+    divB = nfl_teams.get(teamB_proper)
+
+    return divA is not None and divA == divB
+
 async def select_games_of_the_week():
     global _current_gotw_pairs
 
@@ -228,7 +238,6 @@ async def select_games_of_the_week():
     if state.get("last_week_posted") == _current_week:
         print("[GOTW] Already posted for this week.")
 
-        # Restore pairs
         saved_pairs = state.get("pairs", [])
         _current_gotw_pairs.clear()
         for p in saved_pairs:
@@ -237,7 +246,7 @@ async def select_games_of_the_week():
         print(f"[GOTW] Restored {len(_current_gotw_pairs)} GOTW pairs from state.")
         return
 
-    # ---- fetch standings / records ----
+    # ---- fetch standings ----
     try:
         resp = requests.get(f"{API_BASE_URL}/teams", timeout=5)
         resp.raise_for_status()
@@ -255,7 +264,7 @@ async def select_games_of_the_week():
         pct = wins / games if games > 0 else 0
         team_records[(team.get("name") or "").upper()] = (wins, losses, pct)
 
-    # ---- resolve team->member from guild ----
+    # ---- resolve team->member ----
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         print("[GOTW] Guild not found.")
@@ -274,18 +283,18 @@ async def select_games_of_the_week():
     scored_games = []
 
     for teamA, teamB in _current_pairs:
-        # ensure canonical uppercase
+
         teamA = canonical_team(teamA)
         teamB = canonical_team(teamB)
 
         mA = team_to_member.get(teamA)
         mB = team_to_member.get(teamB)
 
-        # must be user-user
+        # Must be user-user
         if not mA or not mB:
             continue
 
-        # skip if either user is on AP
+        # Skip AP users
         if is_on_ap(mA.id, ap_list) or is_on_ap(mB.id, ap_list):
             continue
 
@@ -294,31 +303,30 @@ async def select_games_of_the_week():
         if not recA or not recB:
             continue
 
-        # --- ADVANCED MATCHUP RANKING SYSTEM ---
-
         pctA = recA[2]
         pctB = recB[2]
 
-        # Base components
-        combined_strength = pctA + pctB  # 0 – 2
-        closeness = 1 - abs(pctA - pctB)  # 0 – 1
+        # 🔥 HARD RULE: both teams must be .500+
+        if pctA < 0.5 or pctB < 0.5:
+            continue
 
-        # Bonus: both winning records
-        both_winning = 1 if (pctA >= 0.5 and pctB >= 0.5) else 0
+        # 🔥 Remove big mismatches
+        diff = abs(pctA - pctB)
+        if diff >= 0.35:
+            continue
 
-        # Bonus: elite matchup (both above .650)
-        elite_matchup = 1 if (pctA >= 0.65 and pctB >= 0.65) else 0
+        combined_strength = pctA + pctB
+        closeness = (1 - diff) ** 2  # non-linear reward for close records
 
-        # Penalty: both losing
-        both_losing = 1 if (pctA < 0.5 and pctB < 0.5) else 0
+        both_strong = 1 if (pctA >= 0.6 and pctB >= 0.6) else 0
+        same_division = 1 if same_division_check(teamA, teamB) else 0
 
-        # Final weighted score
         score = (
-                (combined_strength * 60) +
-                (closeness * 25) +
-                (both_winning * 15) +
-                (elite_matchup * 10) -
-                (both_losing * 20)
+            (combined_strength * 40) +
+            (closeness * 35) +
+            (20) +                 # both winning guaranteed at this point
+            (both_strong * 15) +
+            (same_division * 10)
         )
 
         scored_games.append((score, teamA, teamB))
@@ -326,17 +334,13 @@ async def select_games_of_the_week():
     scored_games.sort(key=lambda x: x[0], reverse=True)
 
     max_games = int(config.get("max_games", 5))
-    min_games = int(config.get("min_games", 2))
-
     selected = scored_games[:max_games]
-    if len(selected) < min_games:
-        selected = scored_games[:min_games]
 
-    _current_gotw_pairs = set(tuple(sorted((a, b))) for _, a, b in selected)
-
-    if not _current_gotw_pairs:
+    if not selected:
         print("[GOTW] No eligible games found.")
         return
+
+    _current_gotw_pairs = set(tuple(sorted((a, b))) for _, a, b in selected)
 
     await post_gotw_message()
 
@@ -344,7 +348,6 @@ async def select_games_of_the_week():
         "last_week_posted": _current_week,
         "pairs": [list(p) for p in _current_gotw_pairs]
     })
-
 
 async def post_gotw_message():
     channel = bot.get_channel(GAME_STREAMS_CHANNEL_ID)

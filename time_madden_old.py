@@ -306,8 +306,8 @@ async def select_games_of_the_week():
         pctA = recA[2]
         pctB = recB[2]
 
-        # 🔥 HARD RULE: both teams must be .500+
-        if pctA < 0.5 or pctB < 0.5:
+        # 🔥 HARD RULE: both teams must be .450+
+        if pctA < 0.45 or pctB < 0.45:
             continue
 
         # 🔥 Remove big mismatches

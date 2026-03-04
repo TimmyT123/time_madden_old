@@ -3679,7 +3679,17 @@ async def on_message(msg):
                 # week_map = {1: -3, 2: -2, 3: -1}
                 # norm = f"week {week_map[n]}"
 
-            week_schedule = wrd.wurd_sched_main(norm)
+            # Convert playoff tokens to numeric weeks for the scheduler
+            playoff_map = {
+                "WEEK WILD CARD": "week 19",
+                "WEEK DIVISIONAL": "week 20",
+                "WEEK CONFERENCE": "week 21",
+                "WEEK SUPER BOWL": "week 23"
+            }
+
+            norm_sched = playoff_map.get(norm.upper(), norm)
+
+            week_schedule = wrd.wurd_sched_main(norm_sched)
 
             # IF TEST IS TRUE THEN WE PRINT SCHEDULE WITHOUT POSTING IT
             if TEST:

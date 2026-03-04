@@ -3783,6 +3783,11 @@ async def on_message(msg):
 
                 first = True
                 for chunk in split_message(week_schedule):
+
+                    # Prevent Discord empty message crash
+                    if not chunk or not chunk.strip():
+                        continue
+
                     if first and ('all' not in msg_text) and not is_playoffs:
 
                         now_az = datetime.now(pytz.timezone("US/Arizona"))

@@ -3689,7 +3689,12 @@ async def on_message(msg):
 
             norm_sched = playoff_map.get(norm.upper(), norm)
 
-            week_schedule = wrd.wurd_sched_main(norm_sched)
+            playoff_weeks = {"week 19", "week 20", "week 21", "week 23"}
+
+            if norm_sched.lower() in playoff_weeks:
+                week_schedule = ""  # playoffs handled by seed_advance
+            else:
+                week_schedule = wrd.wurd_sched_main(norm_sched)
 
             # IF TEST IS TRUE THEN WE PRINT SCHEDULE WITHOUT POSTING IT
             if TEST:

@@ -3828,9 +3828,31 @@ async def on_message(msg):
                 # For both 'week N' *and* 'pre N', build the game forums
                 if any(k in msg_text for k in ("week", "pre")):
                     guild = bot.get_guild(GUILD_ID)
-                    await delete_category_channels(guild)  # clear previous week’s forums
+                    await delete_category_channels(guild)
                     channel_activity_tracker.clear()
-                    await create_user_user_channels(guild)  # create new matchup forums
+
+                    if parsed_week in (19, 20, 21, 23):  # playoffs
+                        for team1, team2 in _current_pairs:
+                            channel_name = f"{team1.lower()}-{team2.lower()}"
+
+                            members = []
+                            for m in guild.members:
+                                team = extract_team_from_nick(m.display_name or "")
+                                if team in (team1, team2):
+                                    members.append(m.id)
+
+                            logger.info(f"Creating playoff channel: {team1}-{team2}")
+
+                            await create_channel_helper(
+                                guild,
+                                team_name=channel_name,
+                                member_ids=members,
+                                message_content=f"Welcome to the {team1} vs {team2} playoff matchup!"
+                            )
+                            await asyncio.sleep(0.8)
+
+                    else:
+                        await create_user_user_channels(guild)
 
                     build_week_cache_from_current_state()
 

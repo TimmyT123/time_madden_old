@@ -420,26 +420,42 @@ async def pre_advance_reminder_loop():
     while True:
         try:
             st = _load_week_state()
+
             week = int(st.get("week", 0))
             matchups = st.get("matchups", [])
             pre_sent = st.get("pre_reminder_sent", False)
+            advance_time_str = st.get("advance_time")
 
-            # Only run reminder for REGULAR SEASON weeks (1–18)
-            if not week or not matchups or week < 1 or week > 18:
+            # Only run for regular season
+            if not week or week < 1 or week > 18:
+                await asyncio.sleep(60)
+                continue
+
+            if not advance_time_str:
                 await asyncio.sleep(60)
                 continue
 
             tz = pytz.timezone("US/Arizona")
             now = datetime.now(tz)
 
-            target = now.replace(hour=17, minute=0, second=0, microsecond=0)
-            if now >= target:
-                target += timedelta(days=1)
+            # 🔥 Convert stored advance time
+            advance_time = datetime.fromisoformat(advance_time_str).astimezone(tz)
 
-            reminder_time = target - timedelta(hours=23, minutes=30)
+            # 🔥 HARD RULE: 23 hours AFTER advance
+            reminder_time = advance_time + timedelta(hours=23)
 
-            # Only fire if we are BETWEEN reminder time and advance time
-            if reminder_time <= now < target and not pre_sent:
+            logger.info(
+                "[24H DEBUG] week=%s | pre_sent=%s | advance_time_az=%s | reminder_time_az=%s | now_az=%s",
+                week,
+                pre_sent,
+                advance_time.strftime("%Y-%m-%d %I:%M:%S %p %Z"),
+                reminder_time.strftime("%Y-%m-%d %I:%M:%S %p %Z"),
+                now.strftime("%Y-%m-%d %I:%M:%S %p %Z"),
+            )
+
+            # Only fire once
+            if now >= reminder_time and not pre_sent:
+
                 guild = bot.get_guild(GUILD_ID)
                 category = guild.get_channel(CATEGORY_ID)
 
@@ -465,7 +481,7 @@ async def pre_advance_reminder_loop():
                     await ch.send(
                         f"🔔 **24-Hour Scheduling Reminder**\n"
                         f"{mentions}\n"
-                        "Advance is tomorrow at **5:00 PM AZ**.\n"
+                        "Advance is approaching.\n"
                         "Please confirm scheduling.\n"
                         "Failure to communicate may result in AP status.",
                         allowed_mentions=AllowedMentions(users=True)
@@ -473,14 +489,19 @@ async def pre_advance_reminder_loop():
 
                     await asyncio.sleep(1.2)
 
-                _save_week_state(week, matchups, pre_sent=True)
+                # 🔒 Mark as sent (prevents spam)
+                _save_week_state(
+                    week,
+                    matchups,
+                    pre_sent=True,
+                    advance_time=advance_time_str
+                )
 
             await asyncio.sleep(60)
 
         except Exception as e:
             logger.warning(f"pre_advance_reminder_loop error: {e}")
             await asyncio.sleep(120)
-
 
 def load_team_id_mapping():
     global TEAM_NAME_TO_ID
@@ -986,22 +1007,41 @@ def _load_week_state():
     try:
         with open(WEEK_STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # ensure new field exists
+
             if "pre_reminder_sent" not in data:
                 data["pre_reminder_sent"] = False
-            return data
-    except FileNotFoundError:
-        return {"week": 0, "matchups": [], "pre_reminder_sent": False}
-    except Exception:
-        return {"week": 0, "matchups": [], "pre_reminder_sent": False}
 
-def _save_week_state(week: int, matchups: list[list[str]], pre_sent: bool = False):
-    with open(WEEK_STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump({
-            "week": week,
-            "matchups": matchups,
-            "pre_reminder_sent": pre_sent
-        }, f, indent=2)
+            if "advance_time" not in data:
+                data["advance_time"] = None
+
+            return data
+    except:
+        return {
+            "week": 0,
+            "matchups": [],
+            "pre_reminder_sent": False,
+            "advance_time": None
+        }
+
+def _save_week_state(wk, pairs, pre_sent=None, advance_time="__KEEP__"):
+    existing = _load_week_state()
+
+    data = {
+        "week": wk,
+        "matchups": pairs,
+        "pre_reminder_sent": (
+            pre_sent if pre_sent is not None
+            else existing.get("pre_reminder_sent", False)
+        ),
+        "advance_time": (
+            existing.get("advance_time")
+            if advance_time == "__KEEP__"
+            else advance_time
+        )
+    }
+
+    with open(WEEK_STATE_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 def get_current_week_and_matchups():
     st = _load_week_state()
@@ -2642,7 +2682,12 @@ async def seed_week(ctx, week: int):
     _current_week = week
     _current_pairs = []
     _current_matchups = {}
-    _save_week_state(week, [])
+    _save_week_state(
+        week,
+        [],
+        pre_sent=False,
+        advance_time=None
+    )
     await ctx.reply(f"Seeded week_state.json → WEEK {week} (no matchups).")
 
 @bot.command(name="seed_advance")
@@ -2656,7 +2701,12 @@ async def seed_advance(ctx, *, block: str):
     _current_pairs = pairs
     _current_matchups = mapping
 
-    _save_week_state(wk, [[L, R] for (L, R) in pairs], pre_sent=False)
+    _save_week_state(
+        wk,
+        [[L, R] for (L, R) in pairs],
+        pre_sent=False,
+        advance_time=datetime.now(pytz.utc).isoformat()
+    )
     # write flyer cache
     build_week_cache_from_current_state()
     await ctx.reply(f"Seeded WEEK {wk} with {len(pairs)} matchups. No messages posted.")
@@ -3460,7 +3510,12 @@ async def on_message(msg):
                 _current_matchups = mapping
 
                 # ⬇️ persist to disk so it survives restarts
-                _save_week_state(wk, [[L, R] for (L, R) in pairs], pre_sent=False)
+                _save_week_state(
+                    wk,
+                    [[L, R] for (L, R) in pairs],
+                    pre_sent=False,
+                    advance_time=datetime.now(pytz.utc).isoformat()
+                )
                 logger.info(f"Advance learned & saved: WEEK={wk}, games={len(pairs)}")
     except Exception as e:
         logger.warning(f"advance parse failed: {e}")

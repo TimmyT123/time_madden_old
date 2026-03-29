@@ -481,7 +481,7 @@ async def pre_advance_reminder_loop():
                     await ch.send(
                         f"🔔 **24-Hour Scheduling Reminder**\n"
                         f"{mentions}\n"
-                        "Advance is approaching.\n"
+                        "Advance is approaching tomorrow.\n"
                         "Please confirm scheduling.\n"
                         "Failure to communicate may result in AP status.",
                         allowed_mentions=AllowedMentions(users=True)

@@ -2018,42 +2018,44 @@ def _active_ap_signature():
         key_tuples.append((uid, (u.get("start") or ""), (u.get("until") or "")))
     return tuple(sorted(key_tuples))
 
-async def ap_autopost_watcher():
-    """
-    Periodically checks if the set of ACTIVE AP users has changed.
-    If changed, post a fresh AP bulletin to the on-vacation forum.
-    Avoids posting at startup if nothing changed since last post.
-    """
-    interval = int(os.getenv("AP_AUTOPUBLISH_INTERVAL_SEC", "600"))  # default: 10 min
 
-    # Load last posted signature from disk (prevents repost on restart)
-    prev_sig_str = _load_last_ap_sig_str()
+AP_TRIGGER_FILE = "_ap_trigger.json"
+LAST_TRIGGER_TS = 0
+LAST_POST_TIME = 0
 
-    # Initial check shortly after startup
-    await asyncio.sleep(5)
-    try:
-        curr_sig = _active_ap_signature()
-        curr_sig_str = _sig_to_str(curr_sig)
-        if curr_sig_str != prev_sig_str:
-            await post_ap_bulletin(bot)
-            _save_last_ap_sig_str(curr_sig_str)
-            prev_sig_str = curr_sig_str
-    except Exception as e:
-        logger.warning(f"ap_autopost_watcher initial post: {e}")
+async def ap_trigger_watcher():
+    global LAST_TRIGGER_TS, LAST_POST_TIME
 
-    # Keep watching
-    while True:
+    await bot.wait_until_ready()
+    print("🚀 AP trigger watcher started")
+
+    while not bot.is_closed():
         try:
-            curr_sig = _active_ap_signature()
-            curr_sig_str = _sig_to_str(curr_sig)
-            if curr_sig_str != prev_sig_str:
-                await post_ap_bulletin(bot)
-                _save_last_ap_sig_str(curr_sig_str)
-                prev_sig_str = curr_sig_str
-        except Exception as e:
-            logger.warning(f"ap_autopost_watcher: {e}")
+            if os.path.exists(AP_TRIGGER_FILE):
+                with open(AP_TRIGGER_FILE, "r") as f:
+                    data = json.load(f)
 
-        await asyncio.sleep(interval)
+                ts = data.get("ts", 0)
+                now = time.time()
+
+                # ✅ Only react to NEW trigger
+                if ts > LAST_TRIGGER_TS:
+
+                    # ✅ Safety: prevent spam if something breaks
+                    if now - LAST_POST_TIME > 10:
+                        print(f"🔥 AP change detected (ts={ts})")
+
+                        await post_ap_bulletin(bot)
+
+                        LAST_POST_TIME = now
+                        LAST_TRIGGER_TS = ts
+                    else:
+                        print("⚠️ Skipped post (cooldown active)")
+
+        except Exception as e:
+            print(f"❌ AP trigger watcher error: {e}")
+
+        await asyncio.sleep(2)
 
 
 def _start_date(u: dict):
@@ -3283,7 +3285,7 @@ async def on_ready():
     bot.loop.create_task(ap_return_reminder_loop())
 
     # Start the AP auto-post watcher
-    bot.loop.create_task(ap_autopost_watcher())
+    bot.loop.create_task(ap_trigger_watcher())
 
     # start inactivity loop
     # bot.loop.create_task(check_inactivity())  #This is Turned Off for now

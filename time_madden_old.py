@@ -2101,7 +2101,6 @@ def render_ap_bulletin():
 
     lines.append("Notes:")
     lines.append("• If they’re your opponent, play their CPU.")
-    lines.append("• AP auto-expires the day after the return date.")
     return "\n".join(lines).rstrip()
 
 async def post_ap_bulletin(bot):

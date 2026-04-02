@@ -1907,28 +1907,7 @@ AP_ALERT_CHANNEL_ID = int(os.getenv("AP_ALERT_CHANNEL_ID", "0"))
 AP_ALERT_TZ = os.getenv("AP_ALERT_TZ", "US/Arizona")
 
 
-AP_SIG_FILE = "data/ap_last_sig.json"
 os.makedirs("data", exist_ok=True)
-
-def _sig_to_str(sig_tuple: tuple) -> str:
-    # stable JSON string for comparison/persistence
-    # sig looks like: (("1234567890","2025-01-03","2025-01-10"), ...)
-    return json.dumps(sig_tuple, separators=(",", ":"))
-
-def _load_last_ap_sig_str() -> str:
-    try:
-        with open(AP_SIG_FILE, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        return ""
-    except Exception:
-        return ""
-
-def _save_last_ap_sig_str(sig_str: str):
-    tmp = AP_SIG_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(sig_str)
-    os.replace(tmp, AP_SIG_FILE)
 
 
 def _parse_date(d: str) -> datetime:
@@ -1962,7 +1941,7 @@ def load_ap_users(force=False):
             if start_date > until_date:
                 continue
 
-            if start_date <= today_local <= until_date:
+            if start_date <= today_local < until_date:
                 u = dict(u)
                 u["user_id"] = _normalize_id(u.get("user_id"))
                 active.append(u)
@@ -1999,19 +1978,6 @@ def is_on_ap(user_id: int | str, ap_users=None):
             return u
     return None
 
-def _active_ap_signature():
-    """
-    Returns a stable signature (tuple) of currently ACTIVE AP entries.
-    Active = start <= today <= until in AP_ALERT_TZ (as enforced by load_ap_users).
-    Only keys that define 'active identity' are included so edits to notes, etc.
-    won't spam unless they affect activation window or user id.
-    """
-    active = load_ap_users()
-    key_tuples = []
-    for u in active:
-        uid = _normalize_id(u.get("user_id")) or ""  # normalize
-        key_tuples.append((uid, (u.get("start") or ""), (u.get("until") or "")))
-    return tuple(sorted(key_tuples))
 
 
 AP_TRIGGER_FILE = "_ap_trigger.json"
@@ -2019,39 +1985,27 @@ LAST_TRIGGER_TS = 0
 LAST_POST_TIME = 0
 
 async def ap_trigger_watcher():
-    global LAST_TRIGGER_TS, LAST_POST_TIME
-
     await bot.wait_until_ready()
-    print("🚀 AP trigger watcher started")
 
     while not bot.is_closed():
         try:
-            if os.path.exists(AP_TRIGGER_FILE):
-                with open(AP_TRIGGER_FILE, "r") as f:
-                    data = json.load(f)
+            with open("_ap_trigger.json", "r") as f:
+                data = json.load(f)
 
-                ts = data.get("ts", 0)
-                now = time.time()
+            if data.get("ready"):
+                print("🔥 AP TRIGGER FIRED")
 
-                # ✅ Only react to NEW trigger
-                if ts > LAST_TRIGGER_TS:
+                await post_ap_bulletin(bot)
 
-                    # ✅ Safety: prevent spam if something breaks
-                    if now - LAST_POST_TIME > 10:
-                        print(f"🔥 AP change detected (ts={ts})")
+                data["ready"] = False
 
-                        await post_ap_bulletin(bot)
-
-                        LAST_POST_TIME = now
-                        LAST_TRIGGER_TS = ts
-                    else:
-                        print("⚠️ Skipped post (cooldown active)")
+                with open("_ap_trigger.json", "w") as f:
+                    json.dump(data, f, indent=2)
 
         except Exception as e:
-            print(f"❌ AP trigger watcher error: {e}")
+            print(f"AP trigger error: {e}")
 
         await asyncio.sleep(2)
-
 
 def _start_date(u: dict):
     """

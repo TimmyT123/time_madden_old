@@ -1936,10 +1936,6 @@ def _parse_date(d: str) -> datetime:
     return datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=dt_timezone.utc)
 
 def load_ap_users(force=False):
-    """
-    Load ap_users.json only when file changes.
-    Filters out inactive AP entries.
-    """
     global _AP_MTIME, _AP_CACHE
 
     try:
@@ -1947,35 +1943,34 @@ def load_ap_users(force=False):
     except FileNotFoundError:
         return []
 
-    # Reload only if file changed OR force=True
     if force or mtime != _AP_MTIME:
+        with open(AP_FILE, "r", encoding="utf-8") as f:
+            _AP_CACHE = json.load(f)
+        _AP_MTIME = mtime
+
+    # 🔥 ALWAYS FILTER HERE
+    tz = _tz(AP_ALERT_TZ)
+    today_local = datetime.now(tz).date()
+
+    active = []
+    for u in _AP_CACHE:
         try:
-            with open(AP_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except Exception:
-            return []
+            start_date = _start_date(u)
+            until_date = _date_from_str(u["until"])
 
-        tz = _tz(AP_ALERT_TZ)
-        today_local = datetime.now(tz).date()
-
-        active = []
-        for u in raw:
-            try:
-                start_date = _start_date(u)
-                until_date = _date_from_str(u["until"])
-                if start_date <= today_local <= until_date:
-                    u = dict(u)
-                    u["user_id"] = _normalize_id(u.get("user_id"))
-                    active.append(u)
-            except Exception:
+            # skip invalid ranges
+            if start_date > until_date:
                 continue
 
-        _AP_CACHE = active
-        _AP_MTIME = mtime
-        print(f"[AP] Reloaded ({len(active)} active entries).")
+            if start_date <= today_local <= until_date:
+                u = dict(u)
+                u["user_id"] = _normalize_id(u.get("user_id"))
+                active.append(u)
+        except Exception:
+            continue
 
-    # return cached copy
-    return list(_AP_CACHE or [])
+    return active
+
 
 def _normalize_id(value) -> str | None:
     """

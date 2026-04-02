@@ -444,14 +444,14 @@ async def pre_advance_reminder_loop():
             # 🔥 HARD RULE: 23 hours AFTER advance
             reminder_time = advance_time + timedelta(hours=23)
 
-            logger.info(
-                "[24H DEBUG] week=%s | pre_sent=%s | advance_time_az=%s | reminder_time_az=%s | now_az=%s",
-                week,
-                pre_sent,
-                advance_time.strftime("%Y-%m-%d %I:%M:%S %p %Z"),
-                reminder_time.strftime("%Y-%m-%d %I:%M:%S %p %Z"),
-                now.strftime("%Y-%m-%d %I:%M:%S %p %Z"),
-            )
+            # logger.info(
+            #     "[24H DEBUG] week=%s | pre_sent=%s | advance_time_az=%s | reminder_time_az=%s | now_az=%s",
+            #     week,
+            #     pre_sent,
+            #     advance_time.strftime("%Y-%m-%d %I:%M:%S %p %Z"),
+            #     reminder_time.strftime("%Y-%m-%d %I:%M:%S %p %Z"),
+            #     now.strftime("%Y-%m-%d %I:%M:%S %p %Z"),
+            # )
 
             # Only fire once
             if now >= reminder_time and not pre_sent:

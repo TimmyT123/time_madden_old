@@ -244,7 +244,7 @@ async def select_games_of_the_week():
             _current_gotw_pairs.add(tuple(sorted(p)))
 
         print(f"[GOTW] Restored {len(_current_gotw_pairs)} GOTW pairs from state.")
-        # DO NOT return TEST BACK to : return
+        return
 
     # ---- fetch standings ----
     try:
@@ -316,7 +316,7 @@ async def select_games_of_the_week():
 
         print(f"  pctA: {pctA}, pctB: {pctB}")  # DEBUG
         # 🔥 HARD RULE: both teams must be .450+
-        if pctA < 0.35 or pctB < 0.35:
+        if pctA < 0.45 or pctB < 0.45:
             continue
 
         # 🔥 Remove big mismatches
@@ -352,10 +352,7 @@ async def select_games_of_the_week():
 
     _current_gotw_pairs = set(tuple(sorted((a, b))) for _, a, b in selected)
 
-    # await post_gotw_message()  # temp post uncomment this after fix
-    print("\n[GOTW DEBUG RESULTS]")  # after fix delete this
-    for score, a, b in scored_games:  # after fix delete this
-        print(f"{a} vs {b} -> {score:.2f}")  # after fix delete this
+    await post_gotw_message()
 
     save_gotw_state({
         "last_week_posted": _current_week,
@@ -2620,6 +2617,7 @@ async def playtime_cmd(ctx, *, availability: str = ""):
 
 @bot.command()
 async def test_gotw(ctx):
+    print("[CMD] Running GOTW test...")
     await select_games_of_the_week()
     await ctx.send("GOTW test complete (check logs)")
 

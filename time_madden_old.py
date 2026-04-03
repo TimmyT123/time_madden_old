@@ -290,6 +290,11 @@ async def select_games_of_the_week():
         mA = team_to_member.get(teamA)
         mB = team_to_member.get(teamB)
 
+        print(f"[CHECK] {teamA} vs {teamB}")  # DEBUG
+        print(f"  mA: {bool(mA)}, mB: {bool(mB)}")  # DEBUG
+
+        print(f"  AP: {is_on_ap(mA.id, ap_list) if mA else 'N/A'}")  # DEBUG
+
         # Must be user-user
         if not mA or not mB:
             continue
@@ -300,18 +305,23 @@ async def select_games_of_the_week():
 
         recA = team_records.get(teamA)
         recB = team_records.get(teamB)
+
+        print(f"  recA: {recA}, recB: {recB}")  # DEBUG
+
         if not recA or not recB:
             continue
 
         pctA = recA[2]
         pctB = recB[2]
 
+        print(f"  pctA: {pctA}, pctB: {pctB}")  # DEBUG
         # 🔥 HARD RULE: both teams must be .450+
         if pctA < 0.35 or pctB < 0.35:
             continue
 
         # 🔥 Remove big mismatches
         diff = abs(pctA - pctB)
+        print(f"  diff: {diff}")  # DEBUG
         if diff >= 0.50:
             continue
 
@@ -322,8 +332,8 @@ async def select_games_of_the_week():
         same_division = 1 if same_division_check(teamA, teamB) else 0
 
         score = (
-            (combined_strength * 40) +
-            (closeness * 35) +
+            (combined_strength * 50) +
+            (closeness * 20) +
             (20) +                 # both winning guaranteed at this point
             (both_strong * 15) +
             (same_division * 10)

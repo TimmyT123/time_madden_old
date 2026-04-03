@@ -244,7 +244,7 @@ async def select_games_of_the_week():
             _current_gotw_pairs.add(tuple(sorted(p)))
 
         print(f"[GOTW] Restored {len(_current_gotw_pairs)} GOTW pairs from state.")
-        return
+        # DO NOT return TEST BACK to : return
 
     # ---- fetch standings ----
     try:
@@ -352,7 +352,10 @@ async def select_games_of_the_week():
 
     _current_gotw_pairs = set(tuple(sorted((a, b))) for _, a, b in selected)
 
-    await post_gotw_message()
+    # await post_gotw_message()  # temp post uncomment this after fix
+    print("\n[GOTW DEBUG RESULTS]")  # after fix delete this
+    for score, a, b in scored_games:  # after fix delete this
+        print(f"{a} vs {b} -> {score:.2f}")  # after fix delete this
 
     save_gotw_state({
         "last_week_posted": _current_week,
@@ -2615,6 +2618,10 @@ async def playtime_cmd(ctx, *, availability: str = ""):
         except Exception:
             pass
 
+@bot.command()
+async def test_gotw(ctx):
+    await select_games_of_the_week()
+    await ctx.send("GOTW test complete (check logs)")
 
 def admin_or_authorized():
     async def predicate(ctx: commands.Context) -> bool:

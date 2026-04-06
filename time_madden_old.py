@@ -379,7 +379,14 @@ async def post_gotw_message():
     lines.append("")
     lines.append("🎥 These games will receive AI flyers if broadcasted.")
 
-    await channel.send("\n".join(lines))
+    msg = await channel.send("\n".join(lines))
+
+    # 🔥 PIN MESSAGE
+    try:
+        await msg.pin()
+        print("[GOTW] Message pinned successfully.")
+    except Exception as e:
+        print(f"[GOTW] Failed to pin message: {e}")
 
 async def schedule_games_of_the_week():
     config = load_gotw_config()

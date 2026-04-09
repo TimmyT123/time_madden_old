@@ -1531,10 +1531,10 @@ async def post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer, l
             suppress_embeds=True
         )
         logger.info(f"[FINAL LINK USED IN CAPTION] -> {repr(link)}")
-        try:
-            await msg.pin()
-        except:
-            pass
+        # try:
+        #     await msg.pin()
+        # except:
+        #     pass
         return msg
 
     msg = await thread.send(
@@ -1543,10 +1543,10 @@ async def post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer, l
         allowed_mentions=EVERYONE_MENTIONS,
         suppress_embeds=True
     )
-    try:
-        await msg.pin()
-    except:
-        pass
+    # try:
+    #     await msg.pin()
+    # except:
+    #     pass
     return msg
 
 # Late-link watcher (edits pinned caption once; no new ping)

@@ -1683,16 +1683,24 @@ async def rebuild_users(ctx):
         await ctx.reply("`wurd24users.csv` regenerated.\n\n" + report)
 
 def get_current_season(flyer_data: dict | None = None) -> int | str:
-    """
-    Prefer season from flyer API data.
-    Fallback to 'unknown' if unavailable.
-    """
+    if not flyer_data:
+        return "unknown"
+
+    raw = flyer_data.get("season")
+
+    if not raw:
+        return "unknown"
+
     try:
-        if flyer_data and "season" in flyer_data:
-            return int(flyer_data["season"])
+        # Handle "season_4" → 4
+        if isinstance(raw, str) and raw.startswith("season_"):
+            return int(raw.split("_")[1])
+
+        # Handle normal int or numeric string
+        return int(raw)
+
     except Exception:
-        pass
-    return "unknown"
+        return raw  # fallback to raw instead of "unknown"
 
 def prefer_learned_week(parsed_week: int | None) -> int | None:
     """If we’ve learned a week from the advance, prefer it over any parsed/user week."""

@@ -481,8 +481,26 @@ async def pre_advance_reminder_loop():
                     if not tracker:
                         continue
 
+                    member_ids = tracker.get("member_ids", [])
+                    if not member_ids:
+                        continue
+
+                    ap_list = load_ap_users()
+
+                    # 🔥 Check AP status
+                    ap_users_in_channel = [
+                        mid for mid in member_ids
+                        if is_on_ap(mid, ap_list)
+                    ]
+
+                    # 🚫 Skip if ANY user is on AP
+                    if ap_users_in_channel:
+                        logger.info(f"[24H REMINDER SKIP] {ch.name} has AP user(s), skipping.")
+                        continue
+
+                    # Normal non-responder logic
                     non_responders = [
-                        mid for mid in tracker["member_ids"]
+                        mid for mid in member_ids
                         if mid not in tracker["responses"]
                     ]
 

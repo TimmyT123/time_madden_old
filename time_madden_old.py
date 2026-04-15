@@ -2045,6 +2045,43 @@ def is_on_ap(user_id: int | str, ap_users=None):
             return u
     return None
 
+AP_STATE_FILE = "ap_state.json"
+
+
+def get_current_ap_state():
+    ap_users = load_ap_users()
+
+    # Only store what matters for comparison
+    return sorted([
+        {
+            "user_id": _normalize_id(u.get("user_id")),
+            "until": u.get("until")
+        }
+        for u in ap_users
+    ], key=lambda x: x["user_id"] or "")
+
+
+def load_last_ap_state():
+    try:
+        with open(AP_STATE_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return []
+
+
+def save_ap_state(state):
+    with open(AP_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+def ap_state_changed():
+    current = get_current_ap_state()
+    previous = load_last_ap_state()
+
+    if current != previous:
+        save_ap_state(current)
+        return True
+
+    return False
 
 
 AP_TRIGGER_FILE = "_ap_trigger.json"
@@ -3539,6 +3576,14 @@ async def on_message(msg):
                     advance_time=datetime.now(pytz.utc).isoformat()
                 )
                 logger.info(f"Advance learned & saved: WEEK={wk}, games={len(pairs)}")
+
+                # 🔥 ONLY POST AP IF IT CHANGED
+                if ap_state_changed():
+                    logger.info("AP state changed — posting update.")
+                    await post_ap_bulletin(bot)
+                else:
+                    logger.info("AP state unchanged — no post.")
+
     except Exception as e:
         logger.warning(f"advance parse failed: {e}")
 

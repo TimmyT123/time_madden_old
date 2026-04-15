@@ -46,6 +46,6 @@ for i, (front, back) in enumerate(cards, start=1):
     # button = pyautogui.locateOnScreen('save_button.png')
     # pyautogui.click(button)
 
-    time.sleep(7)
+    time.sleep(3)
 
 print("Done!")

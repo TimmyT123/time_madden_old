@@ -94,6 +94,8 @@ TEAM_NAME_TO_ID = {}
 
 WURD_LOGO_PATH = "./static/branding/wurd_logo.png"
 
+ADVANCE_INFO_FILE = "/home/pi/projects/advance_info.json"
+
 
 TEAM_COLORS = {
     "CARDINALS":   ("#97233F", "#000000"),
@@ -537,6 +539,28 @@ async def pre_advance_reminder_loop():
         except Exception as e:
             logger.warning(f"pre_advance_reminder_loop error: {e}")
             await asyncio.sleep(120)
+
+def write_advance_file(advance_dt, week):
+    try:
+        data = {
+            "week": week,
+            "advance_time_iso": advance_dt.isoformat(),
+            "advance_display": advance_dt.strftime("%A, %b %d @ ~%I:%M %p AZ"),
+            "status_text": f"Next Advance: {advance_dt.strftime('%A, %b %d @ ~%I:%M %p AZ')}",
+            "updated_at": datetime.now(pytz.timezone("US/Arizona")).isoformat()
+        }
+
+        tmp_file = ADVANCE_INFO_FILE + ".tmp"
+
+        with open(tmp_file, "w") as f:
+            json.dump(data, f, indent=2)
+
+        os.replace(tmp_file, ADVANCE_INFO_FILE)
+
+        logger.info(f"Advance file updated: {ADVANCE_INFO_FILE}")
+
+    except Exception as e:
+        logger.error(f"Failed to write advance file: {e}")
 
 def load_team_id_mapping():
     global TEAM_NAME_TO_ID
@@ -3856,6 +3880,7 @@ async def on_message(msg):
                             timing_note = "This is the normal 48-hour target time (around 5 PM Arizona)."
 
                         advance = target.replace(hour=17, minute=0, second=0, microsecond=0)
+                        write_advance_file(advance, parsed_week)
 
                         advance_block = (
                             "\n\n⏰ **Advance Time**\n"

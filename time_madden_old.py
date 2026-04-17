@@ -3599,7 +3599,7 @@ async def on_message(msg):
                         reply = generate_ai_reply(msg.content, context)
 
                         if reply and reply.strip():
-                            await msg.channel.send(reply)
+                            await msg.channel.send(f"{msg.author.mention} {reply}")
 
     except Exception as e:
         logger.warning(f"AI handler failed: {e}")

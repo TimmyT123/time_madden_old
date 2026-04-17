@@ -30,6 +30,12 @@ import glob
 from logging.handlers import RotatingFileHandler
 from nfl_teams_divisions import nfl_teams  # Import the complete NFL teams mapping
 
+from ai_bot.ai_handler import generate_ai_reply, generate_personality_message
+from ai_bot.ai_responses import is_bot_mentioned
+from ai_bot.ai_memory import update_last_message_time, can_send_personality_message
+
+from ai_bot.lobby_bot import lobby_personality_loop, load_ai_advance_info
+
 try:
     from zoneinfo import ZoneInfo
     def _tz(name: str): return ZoneInfo(name)
@@ -75,6 +81,8 @@ _last_gg_alert_ts = 0.0
 EXPORT_RETRY_IN_PROGRESS = False
 EXPORT_MAX_ATTEMPTS = 5
 EXPORT_RETRY_DELAY = 120  # seconds
+
+personality_loop_started = False
 
 GG_WORD_RE = re.compile(r"\bggs?\b", re.IGNORECASE)
 
@@ -3288,10 +3296,24 @@ async def logs_cmd(ctx, *, rest: str = ""):
 # Event handler for bot login and startup details
 @bot.event
 async def on_ready():
+    global personality_loop_started
     load_team_id_mapping()
 
     await rebuild_channel_activity()
     bot.loop.create_task(pre_advance_reminder_loop())
+
+
+    if not personality_loop_started:
+        bot.loop.create_task(
+            lobby_personality_loop(
+                bot,
+                logger,
+                ADVANCE_INFO_FILE,
+                get_lobby_talk_channel
+            )
+        )
+        personality_loop_started = True
+        print("✅ AI personality loop started")
 
     try:
         guild = bot.get_guild(GUILD_ID)
@@ -3557,6 +3579,30 @@ async def on_message(msg):
             if msg.author.id in tracker["member_ids"]:
                 tracker["responses"].add(msg.author.id)  # Mark the member as having responded
         await bot.process_commands(msg)  # Ensure bot commands in on_message are handled
+
+    # =============================
+    # 🤖 AI LOBBY BOT (SAFE INSERT)
+    # =============================
+    try:
+        if msg.guild:
+            lobby_channel = get_lobby_talk_channel(msg.guild)
+
+            if lobby_channel and msg.channel.id == lobby_channel.id:
+                if msg.author != bot.user:
+                    update_last_message_time()
+
+                if msg.author != bot.user and is_bot_mentioned(msg, bot.user):
+                    async with msg.channel.typing():
+                        await asyncio.sleep(random.randint(5, 15))
+
+                        context = load_ai_advance_info(logger, ADVANCE_INFO_FILE)
+                        reply = generate_ai_reply(msg.content, context)
+
+                        if reply and reply.strip():
+                            await msg.channel.send(reply)
+
+    except Exception as e:
+        logger.warning(f"AI handler failed: {e}")
 
     # --- Advance channel watcher: cache WEEK + matchups -------------------------
     try:

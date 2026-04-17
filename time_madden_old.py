@@ -3599,6 +3599,7 @@ async def on_message(msg):
                         reply = generate_ai_reply(msg.content, context)
 
                         if reply and reply.strip():
+                            reply = reply.strip().strip('"').strip("'")  # strip quotation marks add mention in front
                             await msg.channel.send(f"{msg.author.mention} {reply}")
 
     except Exception as e:

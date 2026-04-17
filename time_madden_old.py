@@ -3593,7 +3593,7 @@ async def on_message(msg):
 
                 if msg.author != bot.user and is_bot_mentioned(msg, bot.user):
                     async with msg.channel.typing():
-                        await asyncio.sleep(random.randint(5, 15))
+                        await asyncio.sleep(random.randint(2, 7))
 
                         context = load_ai_advance_info(logger, ADVANCE_INFO_FILE)
                         reply = generate_ai_reply(msg.content, context)

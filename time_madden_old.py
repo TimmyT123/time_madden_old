@@ -3592,8 +3592,9 @@ async def on_message(msg):
                     update_last_message_time()
 
                 if msg.author != bot.user and is_bot_mentioned(msg, bot.user):
+                    await asyncio.sleep(random.randint(2, 4))  # thinking time
                     async with msg.channel.typing():
-                        await asyncio.sleep(random.randint(5, 9))
+                        await asyncio.sleep(random.randint(4, 7))
 
                         context = load_ai_advance_info(logger, ADVANCE_INFO_FILE)
                         reply = generate_ai_reply(msg.content, context)

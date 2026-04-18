@@ -24,8 +24,8 @@ def can_send_personality_message():
     if (now - last_message_time) < 600:
         return False
 
-    # 2. Bot cooldown (random 1–2 hours)
-    cooldown = random.randint(4200, 7200)
+    # 2. Bot cooldown (random 1.5–3 hours)
+    cooldown = random.randint(5400, 10800)
 
     if (now - last_bot_post_time) < cooldown:
         return False

@@ -12,7 +12,7 @@ from ai_bot.ai_memory import can_send_personality_message
 def is_active_hours():
     az = pytz.timezone("US/Arizona")
     now = datetime.now(az)
-    return 12 <= now.hour < 19
+    return 13 <= now.hour < 19
 
 
 def load_ai_advance_info(logger, ADVANCE_INFO_FILE):

@@ -3,30 +3,46 @@
 from openai import OpenAI
 from ai_bot.ai_prompts import PERSONALITY
 
+from datetime import datetime
+import pytz
+
 client = OpenAI()
+
+def get_time_context(context):
+    az = pytz.timezone("US/Arizona")
+    now = datetime.now(az)
+
+    today_str = now.strftime("%A, %b %d")
+
+    return f"""
+Current Date (DO NOT GUESS):
+- Today is {today_str} (Arizona Time)
+
+League Info:
+- Week: {context.get('week')} (this is NOT the day)
+- Advance: {context.get('advance')}
+"""
 
 
 # =============================
 # MAIN AI REPLY
 # =============================
 def generate_ai_reply(user_message, context):
-    prompt = f"""
-{PERSONALITY}
-
-League Info:
-- Week: {context.get('week')}
-- Advance: {context.get('advance')}
-
-User said:
-"{user_message}"
-
-Reply naturally like you're in the chat.
-"""
+    time_context = get_time_context(context)
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"{PERSONALITY}\n{time_context}\nReply naturally like you're in the chat."
+                },
+                {
+                    "role": "user",
+                    "content": user_message
+                }
+            ],
             max_tokens=80,
             temperature=0.8
         )
@@ -41,27 +57,36 @@ Reply naturally like you're in the chat.
 # PERSONALITY MESSAGE
 # =============================
 def generate_personality_message(context):
+    time_context = get_time_context(context)
+
     prompt = f"""
-{PERSONALITY}
+    {PERSONALITY}
 
-League Info:
-- Week: {context.get('week')}
-- Advance: {context.get('advance')}
+    {time_context}
 
-Say ONE short message to keep the chat active.
+    Say ONE short message to keep the chat active.
 
-Ideas:
-- Ask if anyone is playing
-- Mention advance
-- Light trash talk
+    Ideas:
+    - Ask if anyone is playing
+    - Mention advance
+    - Light trash talk
 
-Keep it to ONE sentence.
-"""
+    Keep it to ONE sentence.
+    """
 
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"{PERSONALITY}\n{time_context}"
+                },
+                {
+                    "role": "user",
+                    "content": "Say ONE short message to keep the chat active."
+                }
+            ],
             max_tokens=50,
             temperature=0.9
         )

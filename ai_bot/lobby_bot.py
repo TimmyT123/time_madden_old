@@ -7,7 +7,7 @@ from ai_bot.ai_handler import generate_personality_message
 from ai_bot.ai_memory import can_send_personality_message
 
 # =============================
-# TIME WINDOW (12PM–7PM AZ)
+# TIME WINDOW (1PM–7PM AZ)
 # =============================
 def is_active_hours():
     az = pytz.timezone("US/Arizona")

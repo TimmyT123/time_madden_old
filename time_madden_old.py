@@ -3823,6 +3823,39 @@ async def on_message(msg):
         if msg.author.id not in AUTHORIZED_USERS:
             return
 
+        # =============================
+        # 📢 DM → LOBBY (!send command)
+        # =============================
+        try:
+            guild = bot.get_guild(GUILD_ID)
+            lobby_channel = get_lobby_talk_channel(guild) if guild else None
+
+            # Only trigger if message starts with !send (case-insensitive)
+            if msg.content.lower().startswith("!send"):
+
+                if not lobby_channel:
+                    await msg.channel.send("❌ Lobby channel not found.")
+                    return
+
+                # Safe removal of command
+                parts = msg.content.split(" ", 1)
+
+                if len(parts) < 2:
+                    await msg.channel.send("❌ Please include a message after !send.")
+                    return
+
+                text = parts[1].strip()
+
+                await lobby_channel.send(
+                    f"🏈 **WURD Update**\n{text}"
+                )
+
+                await msg.channel.send("✅ Sent to lobby-chat.")
+                return
+
+        except Exception as e:
+            logger.warning(f"!send relay failed: {e}")
+
         nicknames_to_users_file()  # Call function to save users with matching team names.  This updates discord teams to wurd24users.csv
 
         # checking 'week' plus one or two numbers or 'all'

@@ -1,7 +1,7 @@
 # I save this script with commits locally and then send to the raspberrync
 #
 # pip install nextcord
-# Run with: TOKEN=your_bot_token python team_selection_order.py
+# Run with: TOKEN=your_bot_token python team_number_drawing.py
 import os, json, random, asyncio
 import nextcord
 from nextcord.ext import commands

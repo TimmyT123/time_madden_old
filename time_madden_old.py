@@ -3823,7 +3823,7 @@ async def on_message(msg):
         if msg.author.id not in AUTHORIZED_USERS:
             return
 
-        # =============================
+        # =============================  This DM message cannot ping users or @everyone -  it's on purpose so it won't spam
         # 📢 DM → LOBBY (!send command) - 🏈 **WURD Update**\n
         # =============================
         try:

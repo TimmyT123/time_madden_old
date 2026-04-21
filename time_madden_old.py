@@ -3824,7 +3824,7 @@ async def on_message(msg):
             return
 
         # =============================
-        # 📢 DM → LOBBY (!send command)
+        # 📢 DM → LOBBY (!send command) - 🏈 **WURD Update**\n
         # =============================
         try:
             guild = bot.get_guild(GUILD_ID)
@@ -3847,8 +3847,8 @@ async def on_message(msg):
                 text = parts[1].strip()
 
                 await lobby_channel.send(
-                    f"🏈 **WURD Update**\n{text}"
-                )
+                    f"{text}"
+                )  # 🏈 **WURD Update**\n
 
                 await msg.channel.send("✅ Sent to lobby-chat.")
                 return

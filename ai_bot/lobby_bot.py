@@ -6,6 +6,8 @@ import json
 from ai_bot.ai_handler import generate_personality_message
 from ai_bot.ai_memory import can_send_personality_message
 
+PERSONALITY_ENABLED = False  # Toggler Personality ON-True or OFF-False
+
 # =============================
 # TIME WINDOW (1PM–7PM AZ)
 # =============================
@@ -46,7 +48,7 @@ async def lobby_personality_loop(bot, logger, ADVANCE_INFO_FILE, get_lobby_talk_
             if is_active_hours():
                 logger.info("[AI BOT] Within active hours")
 
-                if can_send_personality_message():
+                if can_send_personality_message() and PERSONALITY_ENABLED:
                     logger.info("[AI BOT] Sending personality message")
 
                     for guild in bot.guilds:
@@ -66,7 +68,10 @@ async def lobby_personality_loop(bot, logger, ADVANCE_INFO_FILE, get_lobby_talk_
                             await asyncio.sleep(1.5)
 
                 else:
-                    logger.info("[AI BOT] Skipped (cooldown not met)")
+                    if not PERSONALITY_ENABLED:
+                        logger.info("[AI BOT] Personality disabled")
+                    elif not can_send_personality_message():
+                        logger.info("[AI BOT] Skipped (cooldown not met)")
 
             else:
                 logger.info("[AI BOT] Outside active hours")

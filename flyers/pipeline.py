@@ -1,7 +1,7 @@
-import time_madden_old as state
-from datetime import datetime
 
 async def handle_game_stream_post(bot, msg):
+    import time_madden_old as state
+    from datetime import datetime
     import logging
 
     logger = logging.getLogger(__name__)

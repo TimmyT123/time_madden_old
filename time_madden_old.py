@@ -3293,6 +3293,14 @@ async def logs_cmd(ctx, *, rest: str = ""):
 
 # ===== END BOT.LOG READER =====
 
+### THIS IS A DEBUGGING COMMAND TEMP
+@bot.command(name="debug_advance")
+@commands.has_role(ADMIN_ROLE_NAME)
+async def debug_advance(ctx):
+    await ctx.send(f"Current week: {_current_week}")
+    await ctx.send(f"Current pairs: {_current_pairs}")
+    await ctx.send(f"Current matchups: {_current_matchups}")
+
 
 # Event handler for bot login and startup details
 @bot.event

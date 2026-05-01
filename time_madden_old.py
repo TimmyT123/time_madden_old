@@ -35,6 +35,7 @@ from ai_bot.ai_responses import is_bot_mentioned
 from ai_bot.ai_memory import update_last_message_time, can_send_personality_message
 
 from ai_bot.lobby_bot import lobby_personality_loop, load_ai_advance_info
+from flyers.pipeline import handle_game_stream_post
 
 try:
     from zoneinfo import ZoneInfo
@@ -3638,130 +3639,8 @@ async def on_message(msg):
     # ---------------------------------------------------------------------------
 
     # --- Text-channel flyer trigger for game-streams ----------------------------
-    try:
-        if msg.guild and GAME_STREAMS_CHANNEL_ID and msg.channel.id == GAME_STREAMS_CHANNEL_ID:
-            # Prevent bot from responding to its own flyers
-            if msg.author == bot.user:
-                return
-
-            full_content = msg.content or ""
-            link = find_stream_link(full_content)
-
-            # ❌ If no link → do nothing
-            if not link:
-                return
-
-            # ❌ If we don't have an advance learned, we can't build a matchup
-            if not _current_week or not _current_matchups:
-                logger.warning("game-streams: link posted but no advance/matchups are loaded yet.")
-                return
-
-            # ✅ Ignore ALL message text (before and after the link) for teams/week.
-            # We rely ONLY on:
-            #   - learned week (_current_week)
-            #   - learned matchups (_current_matchups/_current_pairs)
-            #   - author's nickname -> team
-            week = prefer_learned_week(None)
-
-            # Let normalize_matchup_with_learned use the author's nickname + mapping
-            t1, t2 = normalize_matchup_with_learned(None, None, author=msg.author)
-
-            if not (t1 and t2):
-                logger.warning(
-                    f"game-streams: could not resolve matchup from advance for author {msg.author.id} "
-                    f"({msg.author.display_name}); flyer not posted."
-                )
-                return
-
-            # 🚫 DUPLICATE GUARD:
-            # If we already have a flyer for this WEEK + MATCHUP (thread or channel),
-            # do NOT post another one – even if they drop the link again later.
-
-            if not TEAM_NAME_TO_ID:
-                load_team_id_mapping()
-
-            home_id = TEAM_NAME_TO_ID.get(t1)
-            away_id = TEAM_NAME_TO_ID.get(t2)
-
-            logger.info("MATCHUP LOOKUP: %s (%s) vs %s (%s)",
-                        t1, home_id, t2, away_id)
-
-            flyer_data = (
-                fetch_flyer_data(home_id, away_id)
-                if home_id and away_id
-                else None
-            )
-
-            if flyer_data:
-                if "home" in flyer_data and "team1" not in flyer_data:
-                    flyer_data["team1"] = flyer_data["home"]
-                    flyer_data["team2"] = flyer_data["away"]
-
-            if not flyer_data:
-                logger.warning("Skipping registry check — flyer_data missing.")
-            else:
-                season = get_current_season(flyer_data)
-                if registry_has(season, week or 0, t1, t2):
-                    logger.info(
-                        f"Flyer already exists for season={season} week={week} {t1} vs {t2}"
-                    )
-                    return
-
-
-            use_ai = should_use_ai_flyer(week, t1, t2)
-
-            if flyer_data and use_ai:
-                flyer_prompt = build_flyer_image_prompt(flyer_data)
-            else:
-                flyer_prompt = None
-
-            try:
-                flyer_path, flyer_source = generate_flyer_with_fallback(
-                    week=week or 0,
-                    t1=t1,
-                    t2=t2,
-                    streamer=msg.author.display_name,
-                    link=link,
-                    flyer_prompt=flyer_prompt,
-                    flyer_data=flyer_data
-                )
-
-                logger.info(f"game-streams flyer source: {flyer_source}")
-
-            except Exception as e:
-                logger.error(f"flyer render failed in game-streams: {e}")
-                return
-
-            await post_flyer_with_everyone(
-                msg.channel,
-                flyer_path,
-                week or 0,
-                t1,
-                t2,
-                msg.author.display_name,
-                link
-            )
-
-            lobby = get_lobby_talk_channel(msg.guild)
-
-            if lobby:
-                await msg.channel.send(
-                    f"💬 **Game discussion**\n"
-                    f"Please use {lobby.mention} for game discussion."
-                )
-
-            # Registry key is order-agnostic (sorted inside flyer_key),
-            # so future attempts for this same week/game will be blocked.
-            registry_put(season, week or 0, t1, t2, {
-                "message_id": None,
-                "source": "game-streams-channel",
-                "author_id": getattr(msg.author, "id", 0),
-                "ts": datetime.now(dt_timezone.utc).isoformat()
-            })
-
-    except Exception as e:
-        logger.warning(f"game-streams text handler failed: {e}")
-
+    if msg.guild and GAME_STREAMS_CHANNEL_ID and msg.channel.id == GAME_STREAMS_CHANNEL_ID:
+        await handle_game_stream_post(bot, msg)
     # --- end text-channel flyer trigger -----------------------------------------
 
 

@@ -1,26 +1,8 @@
+import time_madden_old as state
+from datetime import datetime
 
 async def handle_game_stream_post(bot, msg):
-    from datetime import datetime
     import logging
-
-    from time_madden_old import (
-        find_stream_link,
-        prefer_learned_week,
-        normalize_matchup_with_learned,
-        TEAM_NAME_TO_ID,
-        load_team_id_mapping,
-        fetch_flyer_data,
-        get_current_season,
-        registry_has,
-        registry_put,
-        should_use_ai_flyer,
-        build_flyer_image_prompt,
-        generate_flyer_with_fallback,
-        post_flyer_with_everyone,
-        get_lobby_talk_channel,
-        _current_week,
-        _current_matchups
-    )
 
     logger = logging.getLogger(__name__)
 
@@ -32,34 +14,34 @@ async def handle_game_stream_post(bot, msg):
             return
 
         full_content = msg.content or ""
-        link = find_stream_link(full_content)
+        link = state.find_stream_link(full_content)
 
         # ❌ If no link → do nothing
         if not link:
             return
 
         # ❌ Must have advance loaded
-        if not _current_week or not _current_matchups:
+        if not state._current_week or not state._current_matchups:
             logger.warning("No advance loaded yet.")
             return
 
         # ✅ Resolve matchup ONLY from learned state
-        week = prefer_learned_week(None)
-        t1, t2 = normalize_matchup_with_learned(None, None, author=msg.author)
+        week = state.prefer_learned_week(None)
+        t1, t2 = state.normalize_matchup_with_learned(None, None, author=msg.author)
 
         if not (t1 and t2):
             logger.warning(f"Could not resolve matchup for {msg.author.display_name}")
             return
 
         # Load team IDs
-        if not TEAM_NAME_TO_ID:
-            load_team_id_mapping()
+        if not state.TEAM_NAME_TO_ID:
+            state.load_team_id_mapping()
 
-        home_id = TEAM_NAME_TO_ID.get(t1)
-        away_id = TEAM_NAME_TO_ID.get(t2)
+        home_id = state.TEAM_NAME_TO_ID.get(t1)
+        away_id = state.TEAM_NAME_TO_ID.get(t2)
 
         flyer_data = (
-            fetch_flyer_data(home_id, away_id)
+            state.fetch_flyer_data(home_id, away_id)
             if home_id and away_id
             else None
         )
@@ -71,17 +53,17 @@ async def handle_game_stream_post(bot, msg):
 
         # 🚫 Duplicate check
         if flyer_data:
-            season = get_current_season(flyer_data)
-            if registry_has(season, week or 0, t1, t2):
+            season = state.get_current_season(flyer_data)
+            if state.registry_has(season, week or 0, t1, t2):
                 logger.info(f"Flyer already exists for {t1} vs {t2}")
                 return
 
         # Decide AI or static
-        use_ai = should_use_ai_flyer(week, t1, t2)
+        use_ai = state.should_use_ai_flyer(week, t1, t2)
 
-        flyer_prompt = build_flyer_image_prompt(flyer_data) if (flyer_data and use_ai) else None
+        flyer_prompt = state.build_flyer_image_prompt(flyer_data) if (flyer_data and use_ai) else None
 
-        flyer_path, flyer_source = generate_flyer_with_fallback(
+        flyer_path, flyer_source = state.generate_flyer_with_fallback(
             week=week or 0,
             t1=t1,
             t2=t2,
@@ -91,7 +73,7 @@ async def handle_game_stream_post(bot, msg):
             flyer_data=flyer_data
         )
 
-        await post_flyer_with_everyone(
+        await state.post_flyer_with_everyone(
             msg.channel,
             flyer_path,
             week or 0,
@@ -102,14 +84,16 @@ async def handle_game_stream_post(bot, msg):
         )
 
         # Send discussion redirect
-        lobby = get_lobby_talk_channel(msg.guild)
+        lobby = state.get_lobby_talk_channel(msg.guild)
         if lobby:
             await msg.channel.send(
                 f"💬 **Game discussion**\nPlease use {lobby.mention} for game discussion."
             )
 
+        season = state.get_current_season(flyer_data) if flyer_data else 0
+
         # Save to registry
-        registry_put(season, week or 0, t1, t2, {
+        state.registry_put(season, week or 0, t1, t2, {
             "message_id": None,
             "source": "game-streams-channel",
             "author_id": getattr(msg.author, "id", 0),

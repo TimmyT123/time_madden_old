@@ -1,6 +1,7 @@
 
 async def handle_game_stream_post(bot, msg):
-    import time_madden_old as state
+    import sys
+    state = sys.modules["__main__"]
     from datetime import datetime
     import logging
 
@@ -21,7 +22,11 @@ async def handle_game_stream_post(bot, msg):
             return
 
         # ❌ Must have advance loaded
-        if not state._current_week or not state._current_matchups:
+        from time_madden_old import load_week_state
+
+        week_data = load_week_state()
+
+        if not week_data:
             logger.warning("No advance loaded yet.")
             return
 

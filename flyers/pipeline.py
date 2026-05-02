@@ -1,5 +1,6 @@
 
 async def handle_game_stream_post(bot, msg):
+    print("🚨 PIPELINE FUNCTION CALLED 🚨")
     import sys
     state = sys.modules["__main__"]
     from datetime import datetime

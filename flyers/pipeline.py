@@ -33,6 +33,7 @@ async def handle_game_stream_post(bot, msg):
         if not (t1 and t2):
             logger.warning(f"Could not resolve matchup for {msg.author.display_name}")
             return
+        logger.info(f"DEBUG: matchup resolved → {t1} vs {t2}")
 
         # Load team IDs
         if not state.TEAM_NAME_TO_ID:
@@ -58,9 +59,11 @@ async def handle_game_stream_post(bot, msg):
             if state.registry_has(season, week or 0, t1, t2):
                 logger.info(f"Flyer already exists for {t1} vs {t2}")
                 return
+        logger.info("DEBUG: passed duplicate check")
 
         # Decide AI or static
         use_ai = state.should_use_ai_flyer(week, t1, t2)
+        logger.info(f"DEBUG: use_ai = {use_ai}")
 
         flyer_prompt = state.build_flyer_image_prompt(flyer_data) if (flyer_data and use_ai) else None
 
@@ -73,6 +76,8 @@ async def handle_game_stream_post(bot, msg):
             flyer_prompt=flyer_prompt,
             flyer_data=flyer_data
         )
+        logger.info(f"DEBUG: flyer generated → path={flyer_path}, source={flyer_source}")
+        logger.info("DEBUG: about to post flyer")
 
         await state.post_flyer_with_everyone(
             msg.channel,

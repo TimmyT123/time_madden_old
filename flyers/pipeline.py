@@ -6,7 +6,7 @@ async def handle_game_stream_post(bot, msg):
     from datetime import datetime
     import logging
 
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger("discord_bot")
 
     try:
         if not msg.guild:
@@ -58,7 +58,7 @@ async def handle_game_stream_post(bot, msg):
         if flyer_data:
             season = state.get_current_season(flyer_data)
             if state.registry_has(season, week or 0, t1, t2):
-                print(f"🚨 DUPLICATE BLOCK: {t1} vs {t2}")
+                logger.info(f"Flyer already exists for {t1} vs {t2}")
                 return
         logger.info("DEBUG: passed duplicate check")
 

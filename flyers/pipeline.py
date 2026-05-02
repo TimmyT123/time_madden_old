@@ -1,12 +1,13 @@
 
 async def handle_game_stream_post(bot, msg):
-    print("🚨 PIPELINE FUNCTION CALLED 🚨")
     import sys
     state = sys.modules["__main__"]
     from datetime import datetime
     import logging
 
     logger = logging.getLogger("discord_bot")
+
+    logger.info("PIPELINE: function called")
 
     try:
         if not msg.guild:
@@ -58,13 +59,11 @@ async def handle_game_stream_post(bot, msg):
         if flyer_data:
             season = state.get_current_season(flyer_data)
             if state.registry_has(season, week or 0, t1, t2):
-                logger.info(f"Flyer already exists for {t1} vs {t2}")
+                await msg.channel.send("⚠️ Flyer already posted for this game.")
                 return
-        logger.info("DEBUG: passed duplicate check")
 
         # Decide AI or static
         use_ai = state.should_use_ai_flyer(week, t1, t2)
-        logger.info(f"DEBUG: use_ai = {use_ai}")
 
         flyer_prompt = state.build_flyer_image_prompt(flyer_data) if (flyer_data and use_ai) else None
 

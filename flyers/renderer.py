@@ -8,9 +8,14 @@ from flyers.ai_generator import generate_chatgpt_flyer_image
 
 logger = logging.getLogger("discord_bot")
 
-LOGOS_DIR = os.getenv("LOGOS_DIR", "./static/logos")
-FLYER_OUT_DIR = os.getenv("FLYER_OUT_DIR", "./static/flyers")
-WURD_LOGO_PATH = "./static/branding/wurd_logo.png"
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = BASE_DIR / "assets"
+
+LOGOS_DIR = ASSETS_DIR / "logos"
+WURD_LOGO_PATH = ASSETS_DIR / "wurd_logo.png"
+FLYER_OUT_DIR = Path(os.getenv("FLYER_OUT_DIR", "./static/flyers"))
 
 TEAM_COLORS = {
     "CARDINALS":   ("#97233F", "#000000"),
@@ -115,12 +120,7 @@ def _badge_with_logo(team: str, logo_path: str, size=260):
         lg = Image.open(logo_path).convert("RGBA")
         max_side = size - 50
 
-        try:
-            RESAMPLE = Image.Resampling.LANCZOS  # This may not exist on raspberry pi
-        except AttributeError:
-            RESAMPLE = Image.ANTIALIAS
-        # ...
-        lg.thumbnail((max_side, max_side), RESAMPLE)
+        lg.thumbnail((max_side, max_side), _resample_filter())
 
         badge.alpha_composite(lg, ((size-lg.width)//2, (size-lg.height)//2))
     except Exception:
@@ -129,17 +129,25 @@ def _badge_with_logo(team: str, logo_path: str, size=260):
 
 def _logo_path_for(team: str) -> str | None:
     candidates = [
-        os.path.join(LOGOS_DIR, f"{team}.png"),
-        os.path.join(LOGOS_DIR, f"{team.title()}.png"),
-        os.path.join(LOGOS_DIR, f"{team.capitalize()}.png"),
-        # extra safety for 49ers
-        os.path.join(LOGOS_DIR, "49ers.png"),
-        os.path.join(LOGOS_DIR, "49ERS.png"),
+        LOGOS_DIR / f"{team}.png",
+        LOGOS_DIR / f"{team.title()}.png",
+        LOGOS_DIR / f"{team.capitalize()}.png",
+        LOGOS_DIR / "49ers.png",
+        LOGOS_DIR / "49ERS.png",
     ]
+
     for p in candidates:
-        if os.path.isfile(p):
-            return p
+        if p.is_file():
+            return str(p)
+
     return None
+
+def _resample_filter():
+    try:
+        return Image.Resampling.LANCZOS
+    except AttributeError:
+        return getattr(Image, "LANCZOS", 1)
+
 
 def _load_wurd_logo(max_width=220):
     try:
@@ -147,7 +155,7 @@ def _load_wurd_logo(max_width=220):
         ratio = max_width / logo.width
         logo = logo.resize(
             (int(logo.width * ratio), int(logo.height * ratio)),
-            Image.Resampling.LANCZOS
+            _resample_filter()
         )
         return logo
     except Exception as e:
@@ -270,13 +278,13 @@ def render_flyer_png(week: int, team1: str, team2: str, streamer: str, link: str
         logger.info(f"[QR LINK VALUE] -> {repr(link)}")
 
     # ---------------- SAVE ----------------
-    out_dir = os.path.join(FLYER_OUT_DIR, f"week_{week}")
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir = FLYER_OUT_DIR / f"week_{week}"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    path = os.path.join(out_dir, f"{team1}_vs_{team2}.png")
+    path = out_dir / f"{team1}_vs_{team2}.png"
     canvas.convert("RGB").save(path, "PNG")
 
-    return path
+    return str(path)
 
 def generate_flyer_with_fallback(
     week: int,
@@ -297,9 +305,9 @@ def generate_flyer_with_fallback(
     # ---- TRY AI FIRST ----
     if flyer_prompt:
         try:
-            out_dir = os.path.join(FLYER_OUT_DIR, f"week_{week}")
-            os.makedirs(out_dir, exist_ok=True)
-            ai_path = os.path.join(out_dir, f"{t1}_vs_{t2}_ai.png")
+            out_dir = FLYER_OUT_DIR / f"week_{week}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ai_path = out_dir / f"{t1}_vs_{t2}_ai.png"
 
             logger.info("Flyer data payload: %s", json.dumps(flyer_data, indent=2))
 
@@ -321,12 +329,12 @@ def generate_flyer_with_fallback(
 
             ok = generate_chatgpt_flyer_image(
                 prompt=flyer_prompt,
-                out_path=ai_path
+                out_path=str(ai_path)
             )
 
-            if ok and os.path.isfile(ai_path):
+            if ok and ai_path.is_file():
                 logger.info("Flyer image source: AI")
-                return ai_path, "AI"
+                return str(ai_path), "AI"
 
         except Exception:
             logger.exception("AI flyer failed, falling back to static")

@@ -34,8 +34,10 @@ from ai_bot.ai_memory import update_last_message_time
 
 from ai_bot.lobby_bot import lobby_personality_loop, load_ai_advance_info
 from flyers.pipeline import handle_game_stream_post
-from flyers.renderer import generate_flyer_with_fallback, week_label
+from flyers.renderer import generate_flyer_with_fallback
 from flyers.ai_generator import build_flyer_caption, build_flyer_image_prompt
+from flyers.registry import registry_has, registry_put
+from flyers.poster import post_flyer_with_everyone, watch_first_link_and_edit
 
 try:
     from zoneinfo import ZoneInfo
@@ -95,13 +97,13 @@ GG_ALERT_MENTION_USER_ID = int(os.getenv("GG_ALERT_MENTION_USER_ID", "0") or 0) 
 
 GAME_STREAMS_FORUM_ID = int(os.getenv("GAME_STREAMS_FORUM_ID", "0") or 0)
 GAME_STREAMS_CHANNEL_ID = int(os.getenv("GAME_STREAMS_CHANNEL_ID", "0") or 0)
-LOGOS_DIR = os.getenv("LOGOS_DIR", "./static/logos")
+LOGOS_DIR = os.getenv("LOGOS_DIR", "flyers/assets/logos")
 FLYER_OUT_DIR = os.getenv("FLYER_OUT_DIR", "./static/flyers")
 EVERYONE_MENTIONS = AllowedMentions(everyone=True, users=False, roles=False, replied_user=False)
 
 TEAM_NAME_TO_ID = {}
 
-WURD_LOGO_PATH = "./static/branding/wurd_logo.png"
+WURD_LOGO_PATH = "flyers/assets/wurd_logo.png"
 
 ADVANCE_INFO_FILE = "/home/pi/projects/advance_info.json"
 
@@ -131,7 +133,6 @@ def should_use_ai_flyer(week: int | None, t1: str, t2: str) -> bool:
 
     return False
 
-FLYER_REGISTRY = "data/flyers.json"  # de-dupe store
 os.makedirs(os.path.dirname(FLYER_OUT_DIR), exist_ok=True)
 
 
@@ -1106,113 +1107,6 @@ def parse_title_for_week_and_teams(title: str) -> tuple[int | None, str | None, 
     return wk, t1, t2
 
 
-def sorted_pair(a: str, b: str) -> tuple[str, str]:
-    return tuple(sorted([a, b]))
-
-
-# Tiny JSON registry (prevents duplicates)
-def _load_registry():
-    try:
-        with open(FLYER_REGISTRY, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
-
-def _save_registry(d: dict):
-    os.makedirs(os.path.dirname(FLYER_REGISTRY), exist_ok=True)
-    tmp = FLYER_REGISTRY + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(d, f, indent=2)
-    os.replace(tmp, FLYER_REGISTRY)
-
-def flyer_key(season: int | str, week: int, team_a: str, team_b: str) -> str:
-    a, b = sorted_pair(team_a, team_b)
-    return f"season:{season}:week:{week}:{a}:{b}"
-
-def registry_has(season: int | str, week: int, t1: str, t2: str) -> bool:
-    reg = _load_registry()
-    return flyer_key(season, week, t1, t2) in reg
-
-def registry_put(season: int | str, week: int, t1: str, t2: str, record: dict):
-    reg = _load_registry()
-    reg[flyer_key(season, week, t1, t2)] = record
-    _save_registry(reg)
-
-
-def _caption(week: int | None, t1: str, t2: str, streamer: str, link: str | None) -> str:
-    if link:
-
-        link_line = f"Live: {link}"  # Live: [Watch Stream]({link})
-
-        logger.info(f"Caption will contain link: {repr(link_line)}")
-        logger.info(f"[CAPTION LINK VALUE] -> {repr(link)}")
-    else:
-        link_line = "Live: (link pending)"
-
-    header = week_label(week).replace("WURD • ", "**") + "**"
-    return (
-        "@everyone\n"
-        f"{header}\n"
-        f"{t1} vs {t2}\n"
-        f"Streamer: {streamer}\n"
-        f"{link_line}"
-    )
-
-async def post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer, link):
-    perms = thread.permissions_for(thread.guild.me)
-    if not perms.mention_everyone:
-        msg = await thread.send(
-            content=("**Heads-up:** I don’t have `Mention Everyone` permission here.\n\n"
-                     + _caption(week,t1,t2,streamer,link).replace("@everyone\n","")),
-            file=File(flyer_path),
-            allowed_mentions=AllowedMentions.none(),
-            suppress_embeds=True
-        )
-        logger.info(f"[FINAL LINK USED IN CAPTION] -> {repr(link)}")
-        # try:
-        #     await msg.pin()
-        # except:
-        #     pass
-        return msg
-
-    msg = await thread.send(
-        content=_caption(week,t1,t2,streamer,link),
-        file=File(flyer_path),
-        allowed_mentions=EVERYONE_MENTIONS,
-        suppress_embeds=True
-    )
-    # try:
-    #     await msg.pin()
-    # except:
-    #     pass
-    return msg
-
-# Late-link watcher (edits pinned caption once; no new ping)
-async def watch_first_link_and_edit(thread, author_id: int, posted_msg_id: int, week: int, t1: str, t2: str, streamer: str):
-    def _check(m: nextcord.Message):
-        return (
-            m.channel.id == thread.id and
-            m.author.id == author_id and
-            find_stream_link(m.content) is not None
-        )
-    try:
-        m = await bot.wait_for("message", timeout=3600, check=_check)
-        link = find_stream_link(m.content)
-        if not link:
-            return
-        msg = await thread.fetch_message(posted_msg_id)
-        await msg.edit(
-            content=_caption(week, t1, t2, streamer, link),
-            allowed_mentions=AllowedMentions.none(),
-            suppress_embeds=True
-        )
-    except asyncio.TimeoutError:
-        pass
-    except Exception as e:
-        logger.warning(f"late-link watcher: {e}")
-
 def _leading_alnum_lower(s: str) -> str:
     """Lowercased display name starting at the first letter/digit."""
     s = s or ""
@@ -1505,7 +1399,16 @@ async def on_thread_create(thread: nextcord.Thread):
     )
 
     # ❌ was: post_flyer_with_everyone(..., *sorted_pair(t1, t2), ...)
-    msg = await post_flyer_with_everyone(thread, flyer_path, week, t1, t2, streamer_display, link)
+    msg = await post_flyer_with_everyone(
+        thread,
+        flyer_path,
+        week,
+        t1,
+        t2,
+        streamer_display,
+        link,
+        EVERYONE_MENTIONS
+    )
 
     # Keep dedupe key sorted so A/B == B/A for registry only
     registry_put(season, week, t1, t2, {
@@ -1517,8 +1420,19 @@ async def on_thread_create(thread: nextcord.Thread):
     })
 
     if not link and author:
-        bot.loop.create_task(watch_first_link_and_edit(thread, author.id, msg.id, week, t1, t2, streamer_display))
-
+        bot.loop.create_task(
+            watch_first_link_and_edit(
+                bot,
+                thread,
+                author.id,
+                msg.id,
+                week,
+                t1,
+                t2,
+                streamer_display,
+                find_stream_link
+            )
+        )
 
 # Timezone explanation helper
 def extract_timezone_code(nickname):

@@ -1,3 +1,4 @@
+# poster.py
 import asyncio
 import logging
 
@@ -44,8 +45,7 @@ async def post_flyer_with_everyone(
     t1: str,
     t2: str,
     streamer: str,
-    link: str | None,
-    everyone_mentions: AllowedMentions
+    link: str | None
 ):
     perms = thread.permissions_for(thread.guild.me)
 
@@ -80,7 +80,7 @@ async def post_flyer_with_everyone(
             include_everyone=True
         ),
         file=File(flyer_path),
-        allowed_mentions=everyone_mentions,
+        allowed_mentions=AllowedMentions(everyone=True),
         suppress_embeds=True
     )
 

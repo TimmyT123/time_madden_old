@@ -43,10 +43,10 @@ async def lobby_personality_loop(bot, logger, ADVANCE_INFO_FILE, get_lobby_talk_
 
     while not bot.is_closed():
         try:
-            logger.info(f"[AI BOT] ActiveHours={is_active_hours()} | CanSend={can_send_personality_message()}")
+            # logger.info(f"[AI BOT] ActiveHours={is_active_hours()} | CanSend={can_send_personality_message()}")
 
             if is_active_hours():
-                logger.info("[AI BOT] Within active hours")
+                # logger.info("[AI BOT] Within active hours")
 
                 if can_send_personality_message() and PERSONALITY_ENABLED:
                     logger.info("[AI BOT] Sending personality message")
@@ -69,12 +69,14 @@ async def lobby_personality_loop(bot, logger, ADVANCE_INFO_FILE, get_lobby_talk_
 
                 else:
                     if not PERSONALITY_ENABLED:
-                        logger.info("[AI BOT] Personality disabled")
+                        pass
+                        # logger.info("[AI BOT] Personality disabled")
                     elif not can_send_personality_message():
                         logger.info("[AI BOT] Skipped (cooldown not met)")
 
             else:
-                logger.info("[AI BOT] Outside active hours")
+                pass
+                # logger.info("[AI BOT] Outside active hours")
 
             await asyncio.sleep(300)  # 5 minutes
 

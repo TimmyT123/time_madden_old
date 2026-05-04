@@ -1,4 +1,4 @@
-# This file is time_madden_old.py, dev on the windows laptop and automatically runs on the raspberrync
+# This file is time_madden_old.py, dev on the windows laptop and automatically runs on the raspberrync pi
 #!/usr/bin/env python3
 
 import time
@@ -38,6 +38,22 @@ from flyers.renderer import generate_flyer_with_fallback
 from flyers.ai_generator import build_flyer_caption, build_flyer_image_prompt
 from flyers.registry import registry_has, registry_put
 from flyers.poster import post_flyer_with_everyone, watch_first_link_and_edit
+
+from utils.file_utils import (
+    load_week_state,
+    save_week_state,
+    get_current_week_and_matchups_from_file,
+    load_playtime_map,
+    save_playtime_map,
+    load_gotw_config_from_file,
+    load_gotw_state_from_file,
+    save_gotw_state_to_file,
+    save_week_cache_if_changed,
+    load_notified_set,
+    save_notified_set,
+    load_last_ap_state_from_file,
+    save_ap_state_to_file,
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -136,42 +152,6 @@ def should_use_ai_flyer(week: int | None, t1: str, t2: str) -> bool:
 os.makedirs(os.path.dirname(FLYER_OUT_DIR), exist_ok=True)
 
 
-def load_gotw_config():
-    default_config = {
-        "enabled": True,
-        "start_week": 5,
-        "min_games": 2,
-        "max_games": 5,
-        "delay_seconds": 480
-    }
-
-    try:
-        if os.path.exists(GOTW_CONFIG_FILE):
-            with open(GOTW_CONFIG_FILE, "r") as f:
-                loaded = json.load(f)
-                default_config.update(loaded)
-    except Exception as e:
-        print(f"[GOTW] Failed to load config: {e}")
-
-    return default_config
-
-
-def load_gotw_state():
-    if os.path.exists(GOTW_STATE_FILE):
-        try:
-            with open(GOTW_STATE_FILE, "r") as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
-
-
-def save_gotw_state(state):
-    try:
-        with open(GOTW_STATE_FILE, "w") as f:
-            json.dump(state, f)
-    except Exception as e:
-        print(f"[GOTW] Failed to save state: {e}")
 
 
 def same_division_check(teamA, teamB):
@@ -652,20 +632,6 @@ bot = commands.Bot(
 )
 
 
-# Link finder + nickname/team parsing (helpers)
-LINK_RE = re.compile(
-    r"(https?://(?:www\.)?twitch\.tv/[A-Za-z0-9_]{4,25}"
-    r"|https?://(?:www\.)?youtube\.com/[^\s<>]+"
-    r"|https?://(?:www\.)?youtu\.be/[^\s<>]+)",
-    re.IGNORECASE
-)
-
-TITLE_RE = re.compile(
-    r"(?:W|Week)\s*(\d+).*?\b([A-Z0-9][A-Z0-9 ]+?)\b\s+vs\s+\b([A-Z0-9][A-Z0-9 ]+?)\b",
-    re.IGNORECASE
-)
-
-
 ADVANCE_CHANNEL_ID = int(os.getenv("ADVANCE_CHANNEL_ID", "0") or 0)
 
 WEEK_STATE_FILE = "data/week_state.json"
@@ -678,46 +644,11 @@ _current_matchups: dict[str, str] = {}
 # list of (left_team, right_team) in the written order
 _current_pairs: list[tuple[str, str]] = []
 
-TEAM_NAME_RE = r"[A-Z0-9][A-Za-z0-9 ]+"  # simple, forgiving
 
 # === PLAYTIME: storage & helpers =============================================
 PLAYTIME_FILE = "data/playtime.json"
 os.makedirs("data", exist_ok=True)
 
-def _load_playtime_map() -> dict[str, str]:
-    try:
-        with open(PLAYTIME_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            # normalize keys to string
-            return {str(k): str(v) for k, v in data.items()}
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
-
-def _save_playtime_map(d: dict[str, str]) -> None:
-    tmp = PLAYTIME_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(d, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, PLAYTIME_FILE)
-
-MENTION_TOKENS_RE = re.compile(
-    r"(?:<@!?\d+>|<@&\d+>|@everyone|@here)",  # user, role, mass mentions
-    flags=re.IGNORECASE,
-)
-
-def sanitize_playtime_text(raw: str) -> str:
-    """
-    Remove Discord mention tokens and trim whitespace.
-    Keeps everything else verbatim (times, days, emojis, punctuation).
-    """
-    if not raw:
-        return ""
-    txt = MENTION_TOKENS_RE.sub("", raw)
-    # collapse accidental double spaces left by removals
-    txt = re.sub(r"\s{2,}", " ", txt).strip()
-    # guardrail: avoid empty string after stripping mentions
-    return txt if txt else "(no details provided)"
 
 def get_playtime(user_id: int | str) -> str | None:
     d = _load_playtime_map()
@@ -796,329 +727,12 @@ async def _update_user_matchup_boards(user: nextcord.Member | nextcord.User) -> 
     return updated
 # === END PLAYTIME helpers ======================================================
 
-def _canon_team_upper(s: str) -> str | None:
-    t = extract_team_from_nick(s or "")
-    return t if t else None
 
 def _load_nfl_title_and_upper():
     with open('NFL_Teams.csv', 'r', encoding='utf-8') as f:
         titles = [ln.strip() for ln in f if ln.strip()]
     uppers = {t.upper(): t for t in titles}
     return titles, uppers
-
-def _scan_guild_for_team_claims(guild):
-    """Return (claims, conflicts, unknowns)
-       claims: dict[TEAM_UPPER] -> list[member]
-       conflicts: subset of claims where more than one member matches the same team
-       unknowns: members whose name looks like a team but isn't in NFL_Teams.csv
-    """
-    titles, upper_map = _load_nfl_title_and_upper()
-    claims = {}
-    unknowns = []
-    for m in guild.members:
-        if getattr(m, "bot", False):
-            continue
-        team_up = _canon_team_upper(m.display_name or m.name)
-        if not team_up:
-            continue
-        if team_up in upper_map:
-            claims.setdefault(team_up, []).append(m)
-        else:
-            unknowns.append((m, team_up))
-    conflicts = {t: members for t, members in claims.items() if len(members) > 1}
-    return claims, conflicts, unknowns, upper_map
-
-def _format_audit_report(guild, claims, conflicts, unknowns, upper_map):
-    total_claimed = len(claims)
-    unique_members = sum(len(v) for v in claims.values())
-    taken_titles = sorted(upper_map[t] for t in claims.keys())
-    lines = []
-    lines.append(f"**WURD users → teams audit for {guild.name}**")
-    lines.append(f"Claimed teams: {total_claimed} | Claiming members: {unique_members}")
-    if conflicts:
-        lines.append("")
-        lines.append("__Conflicts (multiple members claiming same team)__")
-        for t, members in sorted(conflicts.items(), key=lambda x: upper_map[x[0]]):
-            who = ", ".join(f"{m.display_name} ({m.id})" for m in members)
-            lines.append(f"- {upper_map[t]}: {who}")
-    else:
-        lines.append("")
-        lines.append("No conflicts detected ✅")
-
-    if unknowns:
-        lines.append("")
-        lines.append("__Unknown team-like prefixes (not in NFL_Teams.csv)__")
-        for m, t in unknowns:
-            lines.append(f"- {m.display_name} ({m.id}) → “{t}”")
-    else:
-        lines.append("")
-        lines.append("No unknown/invalid team prefixes detected ✅")
-
-    lines.append("")
-    lines.append("__Teams currently considered taken__")
-    for tt in taken_titles:
-        lines.append(f"- {tt}")
-
-    return "\n".join(lines)
-
-
-# --- Preseason support ---
-# Internally: PRE 1 -> week = -3, PRE 2 -> -2, PRE 3 -> -1
-def _pre_to_week(n: int) -> int:
-    return -(4 - n)  # 1->-3, 2->-2, 3->-1
-
-
-def parse_week_token(text: str) -> int | None:
-    if not text:
-        return None
-
-    t = text.upper()
-
-    # ---- PLAYOFFS ----
-    if re.search(r"\bWILD\s*CARD\b|\bWC\b", t):
-        return 19
-
-    if re.search(r"\bDIVISIONAL\b|\bDIVISION\b|\bDIV\b", t):
-        return 20
-
-    if re.search(r"\bCONFERENCE\b|\bCONF\b|\bCF\b", t):
-        return 21
-
-    if re.search(r"\bSUPER\s*BOWL\b|\bSUPERBOWL\b|\bSB\b", t):
-        return 23
-
-    # ---- REGULAR SEASON ----
-    m = re.search(r"\bW(?:EEK)?\s*(\d{1,2})\b", t)
-    if m:
-        return int(m.group(1))
-
-    # ---- PRESEASON ----
-    m = re.search(r"\bPRE(?:SEASON)?\s*(\d)\b", t)
-    if m:
-        n = int(m.group(1))
-        if 1 <= n <= 3:
-            return _pre_to_week(n)
-
-    return None
-
-
-def _canon_team_for_lookup(s: str) -> str:
-    return canonical_team(s.upper())
-
-def _parse_advance_block(text: str):
-    """
-    Parses an advance post like:
-      WEEK 17
-      Eagles(U) vs Bills(U)
-      ...
-    Returns (week, pairs, mapping)
-    """
-    week = None
-    pairs = []
-    mapping = {}
-
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    for ln in lines:
-        wk_token = parse_week_token(ln)
-        if wk_token is not None:
-            week = wk_token
-            continue
-
-        m = re.match(
-            rf"^\s*({TEAM_NAME_RE})\s*\([^)]*\)\s*vs\s*({TEAM_NAME_RE})\s*\([^)]*\)\s*$",
-            ln, flags=re.IGNORECASE
-        )
-        if not m:
-            # try without (U)/(C)
-            m = re.match(
-                rf"^\s*({TEAM_NAME_RE})\s*vs\s*({TEAM_NAME_RE})\s*$",
-                ln, flags=re.IGNORECASE
-            )
-        if m:
-            left = _canon_team_for_lookup(m.group(1))
-            right = _canon_team_for_lookup(m.group(2))
-            pairs.append((left, right))
-            mapping[left] = right
-            mapping[right] = left
-
-    return week, pairs, mapping
-
-
-def _load_week_state():
-    try:
-        with open(WEEK_STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-            if "pre_reminder_sent" not in data:
-                data["pre_reminder_sent"] = False
-
-            if "advance_time" not in data:
-                data["advance_time"] = None
-
-            return data
-    except:
-        return {
-            "week": 0,
-            "matchups": [],
-            "pre_reminder_sent": False,
-            "advance_time": None
-        }
-
-def _save_week_state(wk, pairs, pre_sent=None, advance_time="__KEEP__"):
-    existing = _load_week_state()
-
-    data = {
-        "week": wk,
-        "matchups": pairs,
-        "pre_reminder_sent": (
-            pre_sent if pre_sent is not None
-            else existing.get("pre_reminder_sent", False)
-        ),
-        "advance_time": (
-            existing.get("advance_time")
-            if advance_time == "__KEEP__"
-            else advance_time
-        )
-    }
-
-    with open(WEEK_STATE_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-def get_current_week_and_matchups():
-    st = _load_week_state()
-    return int(st.get("week", 0)), st.get("matchups", [])
-
-ADVANCE_LINE_RE = re.compile(
-    r"^\s*([A-Za-z0-9 .’'-]+)\s*\([^)]*\)\s*vs\s*([A-Za-z0-9 .’'-]+)\s*\([^)]*\)\s*$",
-    re.IGNORECASE
-)
-
-def parse_advance_message(text: str):
-    """
-    Expects something like:
-      WEEK 16
-      49ers(U) vs Colts(U)
-      Bengals(U) vs Dolphins(U)
-      ...
-    Returns: (week:int, matchups:[[TEAM, TEAM], ...]) with canonical ALL-CAPS names
-    """
-    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
-    if not lines:
-        return 0, []
-
-    # find "WEEK N"
-    week = 0
-    for ln in lines[:3]:
-        wk = parse_week_token(ln)
-        if wk is not None:
-            week = wk
-            break
-
-    matchups = []
-    for ln in lines:
-        m = ADVANCE_LINE_RE.match(ln)
-        if not m:
-            continue
-        a = canonical_team(m.group(1).upper())
-        b = canonical_team(m.group(2).upper())
-        if a and b:
-            matchups.append([a, b])
-    return week, matchups
-
-def opponent_for_team(team: str, matchups: list[list[str]]):
-    team = canonical_team(team)
-    for a, b in matchups:
-        if team == a: return b
-        if team == b: return a
-    return None
-
-
-def find_stream_link(text: str) -> str | None:
-    if not text:
-        return None
-
-    # Remove Discord embed wrappers <...>
-    cleaned = text.replace("<", "").replace(">", "")
-
-    logger.info(f"[LINK DEBUG] Cleaned message: {repr(cleaned)}")
-
-    m = LINK_RE.search(cleaned)
-    if m:
-        logger.info(f"[LINK DEBUG] Matched link: {m.group(1)}")
-        return m.group(1)
-
-    logger.warning("[LINK DEBUG] No link detected in message.")
-    return None
-
-def canonical_team(s: str) -> str:
-    s = (s or "").upper().strip()
-    # keep digits (for 49ERS) but drop punctuation
-    s = re.sub(r"[^A-Z0-9 ]+", "", s)
-
-    # common aliases
-    aliases = {
-        "DAL": "COWBOYS", "DALLAS": "COWBOYS",
-        "MIN": "VIKINGS", "MINNESOTA": "VIKINGS",
-        "NYG": "GIANTS", "SF": "49ERS", "SAN FRANCISCO": "49ERS",
-        "NINERS": "49ERS"
-    }
-    s = aliases.get(s, s)
-    return s
-
-def extract_team_from_nick(nick: str) -> str | None:
-    """
-    Return a canonical TEAM (ALL CAPS) if the nickname starts with an official team
-    name (Title Case in NFL_Teams.csv), ignoring leading symbols/digits/emoji.
-    """
-    if not nick:
-        return None
-
-    # normalize: drop leading non-alnum, then casefold for robust comparison
-    lead = _leading_alnum_lower(nick)
-
-    try:
-        titles, upper_map = _load_nfl_title_and_upper()  # Title Case list + UPPER->Title map
-    except Exception:
-        return None
-
-    # Find the first official team whose name is a prefix of the nickname
-    for title in titles:                  # e.g., "Raiders"
-        if lead.startswith(title.casefold()):
-            return title.upper()          # -> "RAIDERS"
-
-    return None
-
-# put this near TITLE_RE (or replace TITLE_RE with this teams-only regex)
-TEAMS_IN_TITLE_RE = re.compile(
-    r"\b([A-Z0-9][A-Z0-9 ]+?)\b\s+vs\s+\b([A-Z0-9][A-Z0-9 ]+?)\b",
-    re.IGNORECASE
-)
-
-def parse_title_for_week_and_teams(title: str) -> tuple[int | None, str | None, str | None]:
-    # week can be regular (e.g., WEEK 7) or preseason (e.g., PRE 2 / PRESEASON 2 -> negative week)
-    wk = parse_week_token(title or "")
-
-    m = TEAMS_IN_TITLE_RE.search(title or "")
-    if not m:
-        return wk, None, None
-
-    t1 = canonical_team(m.group(1))
-    t2 = canonical_team(m.group(2))
-    return wk, t1, t2
-
-
-def _leading_alnum_lower(s: str) -> str:
-    """Lowercased display name starting at the first letter/digit."""
-    s = s or ""
-    i = 0
-    while i < len(s) and not s[i].isalnum():
-        i += 1
-    return s[i:].casefold()
-
-def name_starts_with_team(display_name: str, team_name: str) -> bool:
-    """True if display_name starts with team_name (case-insensitive), ignoring leading symbols."""
-    return _leading_alnum_lower(display_name).startswith(team_name.strip().casefold())
-
 
 
 @bot.command(name="check_users")
@@ -1434,44 +1048,6 @@ async def on_thread_create(thread: nextcord.Thread):
             )
         )
 
-# Timezone explanation helper
-def extract_timezone_code(nickname):
-    if not nickname:
-        return None
-    match = re.search(r'\b(PT|AZ|MT|CT|ET)\b(?=[^\w]*$)', nickname, flags=re.IGNORECASE)
-    return match.group(1) if match else None
-
-def get_timezone_offset_info(tz1_code, tz2_code, tz1_nick, tz2_nick):
-    tz_map = {
-        'PT': 'US/Pacific',
-        'AZ': 'US/Arizona',
-        'MT': 'US/Mountain',
-        'CT': 'US/Central',
-        'ET': 'US/Eastern'
-    }
-
-    if tz1_code not in tz_map or tz2_code not in tz_map:
-        return None
-
-    now = datetime.now(pytz.utc)
-    tz1 = pytz.timezone(tz_map[tz1_code])
-    tz2 = pytz.timezone(tz_map[tz2_code])
-
-    time1 = now.astimezone(tz1)
-    time2 = now.astimezone(tz2)
-    offset1 = time1.utcoffset().total_seconds() // 3600
-    offset2 = time2.utcoffset().total_seconds() // 3600
-    diff = int(offset1 - offset2)
-
-    if diff == 0:
-        return f"You're both in the same time zone ({tz1_code})."
-
-    ahead_behind = "ahead of" if diff > 0 else "behind"
-    tz1_time = time1.strftime('%I').lstrip('0') + time1.strftime(' %p')
-    tz2_time = time2.strftime('%I').lstrip('0') + time2.strftime(' %p')
-
-    return f"**{tz1_code} is {abs(diff)} hour(s) {ahead_behind} {tz2_code}**\n" \
-           f"example:\n{tz1_nick:<24} is {tz1_time}\n{tz2_nick:<24} is {tz2_time}\n"
 
 
 AP_FILE = 'ap_users.json'
@@ -1489,10 +1065,6 @@ AP_ALERT_TZ = os.getenv("AP_ALERT_TZ", "US/Arizona")
 
 os.makedirs("data", exist_ok=True)
 
-
-def _parse_date(d: str) -> datetime:
-    # Stored as YYYY-MM-DD (no time); treat as midnight UTC for comparisons
-    return datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=dt_timezone.utc)
 
 def load_ap_users(force=False):
     global _AP_MTIME, _AP_CACHE
@@ -1574,17 +1146,6 @@ def get_current_ap_state():
     ], key=lambda x: x["user_id"] or "")
 
 
-def load_last_ap_state():
-    try:
-        with open(AP_STATE_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return []
-
-
-def save_ap_state(state):
-    with open(AP_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
 
 def ap_state_changed():
     current = get_current_ap_state()
@@ -1624,31 +1185,6 @@ async def ap_trigger_watcher():
 
         await asyncio.sleep(2)
 
-def _start_date(u: dict):
-    """
-    Returns the date the AP should begin (date object).
-    If 'start' missing/invalid, treat as today in the alert timezone.
-    """
-    tz = _tz(AP_ALERT_TZ)
-    today_local = datetime.now(tz).date()
-    s = (u.get("start") or "").strip()
-    if not s:
-        return today_local
-    try:
-        return _date_from_str(s)
-    except Exception:
-        return today_local
-
-def _date_from_str(dstr: str):
-    """Return a date object from 'YYYY-MM-DD' (no timezone math)."""
-    return datetime.strptime(dstr, "%Y-%m-%d").date()
-
-def human_date(dstr: str) -> str:
-    """Pretty print the same calendar date (no tz shifting)."""
-    d = _date_from_str(dstr)
-    dummy = datetime(d.year, d.month, d.day)  # just for strftime parts
-    # Avoid %-d portability by injecting the day number
-    return f"{dummy.strftime('%a')}, {dummy.strftime('%b')} {d.day}, {dummy.strftime('%Y')}"
 
 def render_ap_bulletin():
     ap_users = sorted(load_ap_users(), key=lambda u: _date_from_str(u["until"]))
@@ -1693,22 +1229,6 @@ async def ap(ctx):
     await post_ap_bulletin(bot)
     await ctx.send("AP bulletin posted.")
 
-
-def _load_notified():
-    try:
-        with open(AP_NOTIFIED_FILE, "r", encoding="utf-8") as f:
-            return set(tuple(x) for x in json.load(f))
-    except FileNotFoundError:
-        return set()
-    except Exception:
-        return set()
-
-def _save_notified(s: set[tuple]):
-    try:
-        with open(AP_NOTIFIED_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(s), f)
-    except Exception:
-        pass
 
 
 async def ap_return_reminder_loop():
@@ -1779,31 +1299,6 @@ async def ap_return_reminder_loop():
 
         # Check hourly
         await asyncio.sleep(3600)
-
-def _is_in_target_game_channel(ch) -> bool:
-    try:
-        # Text channel under the category
-        if ch.type == nextcord.ChannelType.text:
-            cat = getattr(ch, "category", None)
-            return bool(cat and cat.id == GG_CATEGORY_ID)
-
-        # Threads whose parent (forum/text) is under the category
-        if ch.type in (
-            nextcord.ChannelType.public_thread,
-            nextcord.ChannelType.private_thread,
-            nextcord.ChannelType.news_thread,
-        ):
-            parent = getattr(ch, "parent", None)
-            cat = getattr(parent, "category", None) if parent else None
-            return bool(cat and cat.id == GG_CATEGORY_ID)
-
-        # Forum channel itself
-        if ch.type == nextcord.ChannelType.forum:
-            cat = getattr(ch, "category", None)
-            return bool(cat and cat.id == GG_CATEGORY_ID)
-    except Exception:
-        pass
-    return False
 
 
 # BOT CREATING PRIVATE CHANNELS
@@ -1967,16 +1462,6 @@ def load_user_user_teams():
         logger.error("user_user_teams.txt file not found. Please run Wurd24Scheduler to generate it.")
         return []
 
-# Function to fetch members of each team
-async def fetch_team_members(guild, team_name):
-    # Example logic to match users based on a naming convention or a lookup list (adjust based on your server setup)
-    member_ids = []
-    for member in guild.members:
-        # Check if the member's nickname or username contains part of the team name
-        if any(team_part in (member.display_name or member.name).lower() for team_part in team_name.split('-')):
-            member_ids.append(member.id)
-    return member_ids
-
 async def check_inactivity():
     while True:
         now = datetime.now(pytz.utc)
@@ -2026,91 +1511,8 @@ async def create_user_user_channels(guild):
         await asyncio.sleep(0.8)
 
 
-def get_time_zones():
-    pt_time = datetime.now(pytz.timezone('US/Pacific'))
-    az_time = datetime.now(pytz.timezone('US/Arizona'))
-    mtn_time = datetime.now(pytz.timezone('US/Mountain'))
-    central_time = datetime.now(pytz.timezone('US/Central'))
-    eastern_time = datetime.now(pytz.timezone('US/Eastern'))
-    return (pt_time, az_time, mtn_time, central_time, eastern_time)
-
-
-# Function to split a long message into chunks of a specific size
-def split_message(message, max_length=2000):
-    # Initialize list to hold split messages
-    split_messages = []
-
-    # Split message by return characters
-    paragraphs = message.split('\n')
-    current_message = ""
-
-    for paragraph in paragraphs:
-        # Add the paragraph and a newline to the current message if it stays within max_length
-        if len(current_message) + len(paragraph) + 1 <= max_length:
-            current_message += paragraph + '\n'
-        else:
-            # Append the current message to split_messages and start a new one
-            split_messages.append(current_message.strip())
-            current_message = paragraph + '\n'
-
-    # Append the remaining message part
-    if current_message:
-        split_messages.append(current_message.strip())
-
-    return split_messages
-
-
 # Function to check members in a specific channel and save nicknames matching NFL teams
 from pathlib import Path
-
-def nicknames_to_users_file():
-    """
-    Scan the whole guild and write wurd24users.csv with user-controlled teams.
-    Exact "starts-with" match against NFL_Teams.csv entries (title case kept).
-    Writes to the project directory (next to this .py).
-    """
-    guild = bot.get_guild(GUILD_ID)
-    if guild is None:
-        logger.error(f"Guild {GUILD_ID} not found. Not writing wurd24users.csv.")
-        return
-
-    # resolve output to project directory
-    base_dir = Path(__file__).resolve().parent
-    out_path = base_dir / "wurd24users.csv"
-
-    # load canonical team names exactly as in NFL_Teams.csv (title case preserved)
-    try:
-        with open(base_dir / 'NFL_Teams.csv', 'r', encoding='utf-8') as f:
-            teams_exact = [ln.strip() for ln in f if ln.strip()]
-    except FileNotFoundError:
-        logger.error(f"NFL_Teams.csv not found at {base_dir}.")
-        return
-
-    # precompute (UPPER, ORIGINAL) for quick startswith checks
-    lookup = [(t.upper(), t) for t in teams_exact]
-
-    taken_original_case = set()
-
-    for m in guild.members:
-        if getattr(m, "bot", False):
-            continue
-        disp = (m.display_name or m.name or "").strip()
-        disp_up = disp.upper()
-        for up, original in lookup:
-            # exact “starts with team name”
-            if disp_up.startswith(up):
-                taken_original_case.add(original)
-                break
-
-    # write result
-    try:
-        with open(out_path, 'w', encoding='utf-8', newline='') as f:
-            for t in sorted(taken_original_case):
-                f.write(t + '\n')
-        logger.info(f"wurd24users.csv updated with {len(taken_original_case)} team(s) at {out_path}")
-    except Exception as e:
-        logger.error(f"Failed writing {out_path}: {e}")
-
 
 
 @bot.command(name='bot_permissions')
@@ -2228,24 +1630,6 @@ async def test_gotw(ctx):
     await select_games_of_the_week()
     await ctx.send("GOTW test complete (check logs)")
 
-def admin_or_authorized():
-    async def predicate(ctx: commands.Context) -> bool:
-        # DM: allow only if user is on the authorized list
-        if ctx.guild is None:
-            try:
-                return int(ctx.author.id) in AUTHORIZED_USERS
-            except Exception:
-                return False
-        # In-guild: Admin role OR authorized ID
-        is_admin_role = any(r.name == ADMIN_ROLE_NAME for r in ctx.author.roles)
-        is_authorized = False
-        try:
-            is_authorized = int(ctx.author.id) in AUTHORIZED_USERS
-        except Exception:
-            pass
-        return is_admin_role or is_authorized
-    return commands.check(predicate)
-
 
 @bot.command(name="seed_week")
 @admin_or_authorized()
@@ -2284,47 +1668,9 @@ async def seed_advance(ctx, *, block: str):
     await ctx.reply(f"Seeded WEEK {wk} with {len(pairs)} matchups. No messages posted.")
 
 
-def is_exact_word(msg_text, word):
-    """
-    Checks if msg_text exactly matches the specified word.
-
-    Parameters:
-    - msg_text (str): The input string to be checked.
-    - word (str): The target word to match exactly.
-
-    Returns:
-    - bool: True if msg_text is exactly word (case-insensitive), False otherwise.
-    """
-    # Validate inputs
-    if not isinstance(msg_text, str):
-        raise TypeError("msg_text must be a string.")
-    if not isinstance(word, str):
-        raise TypeError("word must be a string.")
-    if not word:
-        raise ValueError("word must not be an empty string.")
-
-    # Define the regex pattern for exact match
-    # Using re.escape to handle any special regex characters in word
-    pattern = r'^' + re.escape(word) + r'$'
-
-    # Perform the match using re.fullmatch for exact matching
-    match = re.fullmatch(pattern, msg_text, re.IGNORECASE)
-
-    return bool(match)
-
-
 # ===== BOT.LOG READER =====
 
 LOG_BACKUP_GLOB = "bot.log*"       # we'll read bot.log, bot.log.1, ... (in modified-time order)
-
-# Gate: only Admin role or AUTHORIZED_USERS can use the log reader
-def _is_authorized(member) -> bool:
-    if any(r.name == ADMIN_ROLE_NAME for r in getattr(member, "roles", [])):
-        return True
-    try:
-        return int(member.id) in AUTHORIZED_USERS
-    except Exception:
-        return False
 
 # Parse one cohesive entry that looks like:
 # Phoenix Time: 09-23-25 06:52 PM
@@ -2424,16 +1770,6 @@ def _group_entries(entries):
             ordered[date_key][forum].sort(key=lambda e: e["dt"])
     return ordered
 
-def _sanitize_message(msg: str) -> str:
-    """
-    Remove Discord embeds by breaking URLs.
-    Example: 'https://twitch.tv/foo' -> '<https://twitch.tv/foo>'
-    (wrapped in angle brackets disables embedding)
-    """
-    if not msg:
-        return msg
-    # Wrap all http/https URLs in < >
-    return re.sub(r'(https?://\S+)', r'<\1>', msg)
 
 def _render_day_all_forums(grouped, the_date: str):
     """
@@ -2661,8 +1997,6 @@ def _render_user(
 
     return "\n".join(lines).rstrip()
 
-def get_lobby_talk_channel(guild):
-    return nextcord.utils.get(guild.text_channels, name="lobby-talk")
 
 @bot.command(name="logs")
 async def logs_cmd(ctx, *, rest: str = ""):
@@ -2918,22 +2252,6 @@ async def on_member_join(member):
 # ---------------------------------------
 
 
-def write_week_cache_if_changed(new_cache):
-    def _hash(x):
-        return hashlib.sha256(json.dumps(x, sort_keys=True).encode()).hexdigest()
-
-    if os.path.exists(WEEK_CACHE_PATH):
-        old = json.load(open(WEEK_CACHE_PATH))
-        if _hash(old) == _hash(new_cache):
-            logger.info("Week cache unchanged — not rewriting")
-            return
-
-    tmp = WEEK_CACHE_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(new_cache, f, indent=2)
-    os.replace(tmp, WEEK_CACHE_PATH)
-
-    logger.info(f"Week cache written: WEEK {_current_week}")
 
 
 WEEK_CACHE_PATH = "data/week_cache.json"

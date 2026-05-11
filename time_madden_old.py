@@ -3066,7 +3066,7 @@ async def retry_export_until_changed():
 # Event handler for processing incoming messages
 @bot.event
 async def on_message(msg):
-    global _last_gg_alert_ts
+    global _last_gg_alert_ts, _current_week, _current_pairs, _current_matchups
 
     # ignore all bot messages except *our own DM*
     if msg.author == bot.user and msg.guild is None:
@@ -3387,7 +3387,6 @@ async def on_message(msg):
                     channel_activity_tracker.clear()
 
                     # Update learned/current state to cut week with no matchups
-                    global _current_week, _current_pairs, _current_matchups
                     _current_week = parsed_week
                     _current_pairs = []
                     _current_matchups = {}

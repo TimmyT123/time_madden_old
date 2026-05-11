@@ -3130,7 +3130,6 @@ async def on_message(msg):
         if msg.guild and ADVANCE_CHANNEL_ID and msg.channel.id == ADVANCE_CHANNEL_ID:
             wk, pairs, mapping = _parse_advance_block(msg.content or "")
             if wk and pairs:
-                global _current_week, _current_pairs, _current_matchups
                 _current_week = wk
                 _current_pairs = pairs
                 _current_matchups = mapping

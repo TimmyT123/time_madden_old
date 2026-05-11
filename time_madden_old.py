@@ -3416,7 +3416,9 @@ async def on_message(msg):
                         "🌟 **Top Rookie Preseason Stats** are now available on the WURD website.\n"
                         "https://wurd-madden.com/rookies?league=26969931&season=season_0\n\n"
                         "⏰ **Advance Time**\n"
-                        "Today at 5 PM AZ time\n"
+                        "The league is scheduled to advance on\n"
+                        f"**{advance.strftime('%A, %b %d @ ~%I:%M %p')} AZ**\n"
+                        "This is the preseason cut-week 24-hour target time.\n"
                     )
 
                     await channel.send(

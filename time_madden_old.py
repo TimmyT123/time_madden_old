@@ -3290,7 +3290,14 @@ async def on_message(msg):
 
             playoff_weeks = {"week 19", "week 20", "week 21", "week 23"}
 
-            if norm_sched.lower() in playoff_weeks:
+            # Parse week early so PRE 4 can bypass Wurd24Scheduler
+            parsed_week = parse_week_token(msg_text)
+
+            # PRE 4 is cut week / no games.
+            # Do not call Wurd24Scheduler because it has no PRE 4 schedule block.
+            if parsed_week == -4:
+                week_schedule = ""
+            elif norm_sched.lower() in playoff_weeks:
                 week_schedule = ""  # playoffs handled by seed_advance
             else:
                 week_schedule = wrd.wurd_sched_main(norm_sched)
@@ -3374,7 +3381,6 @@ async def on_message(msg):
 
                     return "\n".join(out)
 
-                parsed_week = parse_week_token(msg_text)
                 week_schedule = format_schedule_for_discord(week_schedule, parsed_week)
 
                 # ✅ PRE 4 / CUT WEEK: no games, no new matchup channels

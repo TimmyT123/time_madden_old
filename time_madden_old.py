@@ -863,9 +863,15 @@ def _format_audit_report(guild, claims, conflicts, unknowns, upper_map):
 
 
 # --- Preseason support ---
-# Internally: PRE 1 -> week = -3, PRE 2 -> -2, PRE 3 -> -1
+# Internally:
+# PRE 1 -> -3
+# PRE 2 -> -2
+# PRE 3 -> -1
+# PRE 4 -> -4  # cut week / no games
 def _pre_to_week(n: int) -> int:
-    return -(4 - n)  # 1->-3, 2->-2, 3->-1
+    if n == 4:
+        return -4
+    return -(4 - n)
 
 
 def parse_week_token(text: str) -> int | None:
@@ -896,7 +902,7 @@ def parse_week_token(text: str) -> int | None:
     m = re.search(r"\bPRE(?:SEASON)?\s*(\d)\b", t)
     if m:
         n = int(m.group(1))
-        if 1 <= n <= 3:
+        if 1 <= n <= 4:
             return _pre_to_week(n)
 
     return None
@@ -3251,7 +3257,7 @@ async def on_message(msg):
 
         # checking 'week' plus one or two numbers or 'all'
         pattern_week = r"^week \d{1,2}$"
-        pattern_pre = r"^pre\s*[123]$"  # NEW: pre 1, pre 2, pre 3
+        pattern_pre = r"^pre\s*[1234]$"  # NEW: pre 1, pre 2, pre 3, pre 4
         pattern_all = r"^all$"
         pattern_playoffs = r"^week\s+(wild\s*card|divisional|conference|super\s*bowl)$"
 
@@ -3371,6 +3377,55 @@ async def on_message(msg):
 
                 parsed_week = parse_week_token(msg_text)
                 week_schedule = format_schedule_for_discord(week_schedule, parsed_week)
+
+                # ✅ PRE 4 / CUT WEEK: no games, no new matchup channels
+                if parsed_week == -4:
+                    guild = bot.get_guild(GUILD_ID)
+
+                    # Clear old matchup channels
+                    await delete_category_channels(guild)
+                    channel_activity_tracker.clear()
+
+                    # Update learned/current state to cut week with no matchups
+                    global _current_week, _current_pairs, _current_matchups
+                    _current_week = parsed_week
+                    _current_pairs = []
+                    _current_matchups = {}
+
+                    now_az = datetime.now(pytz.timezone("US/Arizona"))
+                    target = now_az + timedelta(hours=24)
+                    advance = target.replace(hour=17, minute=0, second=0, microsecond=0)
+
+                    write_advance_file(advance, parsed_week)
+
+                    _save_week_state(
+                        parsed_week,
+                        [],
+                        pre_sent=False,
+                        advance_time=datetime.now(pytz.utc).isoformat()
+                    )
+
+                    advance_block = (
+                        "🏈 **PRESEASON WEEK 4 — CUT WEEK**\n"
+                        "There are **no User-vs-User games** this week.\n"
+                        "Game scheduling channels have been cleared.\n\n"
+                        "🌟 **Top Rookie Preseason Stats** are now available on the WURD website.\n"
+                        "https://wurd-madden.com/rookies?league=26969931&season=season_0\n\n"
+                        "⏰ **Advance Time**\n"
+                        "Today at 5 PM AZ time\n"
+                    )
+
+                    await channel.send(
+                        f"@everyone\n{advance_block}",
+                        allowed_mentions=EVERYONE_MENTIONS
+                    )
+
+                    build_week_cache_from_current_state()
+
+                    logger.info("Preseason Week 4 cut week complete — scheduling Companion export in 5 minutes")
+                    asyncio.create_task(trigger_companion_export())
+
+                    return
 
                 # Regular season only (weeks 1–18)
                 is_playoffs = parsed_week in (19, 20, 21, 23)

@@ -8,6 +8,23 @@ import pytz
 
 client = OpenAI()
 
+def get_temp_personality_override():
+    az = pytz.timezone("US/Arizona")
+    now = datetime.now(az)
+
+    # Temporary nice mode for today only
+    if now.date().isoformat() == "2026-05-16":
+        return """
+TEMPORARY NICE MODE:
+- For today only, do NOT insult, roast, clown, or trash talk the person chatting with you.
+- Be friendly, positive, and encouraging.
+- Mention that the person chatting with you is great, appreciated, or doing a good job.
+- Keep the WURD Bot style casual and funny, but make it wholesome instead of savage.
+- No mean jokes today.
+"""
+
+    return ""
+
 def get_time_context(context):
     az = pytz.timezone("US/Arizona")
     now = datetime.now(az)
@@ -29,6 +46,7 @@ League Info:
 # =============================
 def generate_ai_reply(user_message, context):
     time_context = get_time_context(context)
+    temp_override = get_temp_personality_override()
 
     try:
         response = client.chat.completions.create(
@@ -36,7 +54,7 @@ def generate_ai_reply(user_message, context):
             messages=[
                 {
                     "role": "system",
-                    "content": f"{PERSONALITY}\n{time_context}\nReply naturally like you're in the chat."
+                    "content": f"{PERSONALITY}\n{time_context}\n{temp_override}\nReply naturally like you're in the chat."
                 },
                 {
                     "role": "user",
@@ -58,21 +76,7 @@ def generate_ai_reply(user_message, context):
 # =============================
 def generate_personality_message(context):
     time_context = get_time_context(context)
-
-    prompt = f"""
-    {PERSONALITY}
-
-    {time_context}
-
-    Say ONE short message to keep the chat active.
-
-    Ideas:
-    - Ask if anyone is playing
-    - Mention advance
-    - Light trash talk
-
-    Keep it to ONE sentence.
-    """
+    temp_override = get_temp_personality_override()
 
     try:
         response = client.chat.completions.create(
@@ -80,11 +84,11 @@ def generate_personality_message(context):
             messages=[
                 {
                     "role": "system",
-                    "content": f"{PERSONALITY}\n{time_context}"
+                    "content": f"{PERSONALITY}\n{time_context}\n{temp_override}"
                 },
                 {
                     "role": "user",
-                    "content": "Say ONE short message to keep the chat active."
+                    "content": "Say ONE short friendly message to keep the chat active. Compliment the person chatting if natural."
                 }
             ],
             max_tokens=50,

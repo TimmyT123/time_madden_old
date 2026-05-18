@@ -28,7 +28,7 @@ import glob
 from logging.handlers import RotatingFileHandler
 from nfl_teams_divisions import nfl_teams  # Import the complete NFL teams mapping
 
-from ai_bot.ai_handler import generate_ai_reply
+from ai_bot.ai_handler import generate_ai_reply, should_bot_stay_quiet
 from ai_bot.ai_responses import is_bot_mentioned
 from ai_bot.ai_memory import update_last_message_time
 
@@ -3111,6 +3111,9 @@ async def on_message(msg):
                     update_last_message_time()
 
                 if msg.author != bot.user and is_bot_mentioned(msg, bot.user):
+                    if should_bot_stay_quiet(msg.content):
+                        return
+
                     await asyncio.sleep(random.randint(2, 4))  # thinking time
                     async with msg.channel.typing():
                         await asyncio.sleep(random.randint(4, 7))

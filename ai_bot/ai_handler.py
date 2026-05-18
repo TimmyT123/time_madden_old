@@ -8,6 +8,27 @@ import pytz
 
 client = OpenAI()
 
+def should_bot_stay_quiet(message_content: str) -> bool:
+    text = message_content.lower().strip()
+
+    quiet_phrases = [
+        "i don't want to talk to you",
+        "i dont want to talk to you",
+        "don't talk to me",
+        "dont talk to me",
+        "leave me alone",
+        "stop talking to me",
+        "not now bot",
+        "shut up bot",
+        "go away bot",
+        "i'm not talking to you",
+        "im not talking to you",
+        "i don't want to talk now",
+        "i dont want to talk now",
+    ]
+
+    return any(phrase in text for phrase in quiet_phrases)
+
 def get_temp_personality_override():
     az = pytz.timezone("US/Arizona")
     now = datetime.now(az)
@@ -47,6 +68,9 @@ League Info:
 def generate_ai_reply(user_message, context):
     time_context = get_time_context(context)
     temp_override = get_temp_personality_override()
+
+    if should_bot_stay_quiet(user_message):
+        return None
 
     try:
         response = client.chat.completions.create(

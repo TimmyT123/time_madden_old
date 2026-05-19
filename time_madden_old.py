@@ -85,6 +85,8 @@ EXPORT_RETRY_IN_PROGRESS = False
 EXPORT_MAX_ATTEMPTS = 5
 EXPORT_RETRY_DELAY = 120  # seconds
 
+startup_loops_started = False
+members_synced_on_startup = False
 personality_loop_started = False
 
 GG_WORD_RE = re.compile(r"\bggs?\b", re.IGNORECASE)
@@ -2803,6 +2805,33 @@ async def logs_cmd(ctx, *, rest: str = ""):
 
 # ===== END BOT.LOG READER =====
 
+DISCORD_MEMBERS_FILE = "/home/pi/projects/discord_members.json"
+
+async def sync_discord_members_to_json(bot):
+    guild = bot.get_guild(GUILD_ID)
+
+    if guild is None:
+        print("⚠️ Could not find WURD guild. Discord members not synced.")
+        return
+
+    members = {
+        str(m.id): {
+            "nickname": m.display_name,
+            "username": str(m),
+            "bot": m.bot,
+            "roles": [role.name for role in m.roles if role.name != "@everyone"],
+            "joined_at": m.joined_at.isoformat() if m.joined_at else None,
+            "avatar_url": str(m.display_avatar.url) if m.display_avatar else None,
+        }
+        for m in guild.members
+        if not m.bot
+    }
+
+    with open(DISCORD_MEMBERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(members, f, indent=2)
+
+    print(f"✅ Synced {len(members)} Discord members to {DISCORD_MEMBERS_FILE}")
+
 ### THIS IS A DEBUGGING COMMAND TEMP
 @bot.command(name="debug_advance")
 @commands.has_role(ADMIN_ROLE_NAME)
@@ -2816,12 +2845,52 @@ async def debug_advance(ctx):
 @bot.event
 async def on_ready():
     global personality_loop_started
+    global startup_loops_started
+    global members_synced_on_startup
+    global _current_week, _current_pairs, _current_matchups
+
     load_team_id_mapping()
 
-    await rebuild_channel_activity()
-    bot.loop.create_task(pre_advance_reminder_loop())
+    try:
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            print(f"Guild with ID {GUILD_ID} not found.")
+            return
 
+        logger.info(f"Logged in as {bot.user.name}")
+        load_ap_users(force=True)
 
+    except Exception as e:
+        logger.error(f"Error during bot startup: {e}")
+        return
+
+    # Rebuild channel activity
+    try:
+        await rebuild_channel_activity()
+    except Exception as e:
+        logger.warning(f"Could not rebuild channel activity: {e}")
+
+    # Sync Discord members once per bot startup
+    if not members_synced_on_startup:
+        try:
+            await sync_discord_members_to_json(bot)
+            members_synced_on_startup = True
+        except Exception as e:
+            logger.warning(f"Discord member sync failed: {e}")
+
+    # Start background loops only once
+    if not startup_loops_started:
+        bot.loop.create_task(pre_advance_reminder_loop())
+        bot.loop.create_task(ap_return_reminder_loop())
+        bot.loop.create_task(ap_trigger_watcher())
+
+        # start inactivity loop
+        # bot.loop.create_task(check_inactivity())  # This is turned off for now
+
+        startup_loops_started = True
+        print("✅ Startup loops started")
+
+    # Start AI personality loop only once
     if not personality_loop_started:
         bot.loop.create_task(
             lobby_personality_loop(
@@ -2834,31 +2903,23 @@ async def on_ready():
         personality_loop_started = True
         print("✅ AI personality loop started")
 
-    try:
-        guild = bot.get_guild(GUILD_ID)
-        if not guild:
-            print(f"Guild with ID {GUILD_ID} not found.")
-            return
-        logger.info(f'Logged in as {bot.user.name}')
-        load_ap_users(force=True)
-    except Exception as e:
-        logger.error(f"Error during bot startup: {e}")
-
-    # Restore last learned advance (survives reboot)
+    # Restore last learned advance
     try:
         st = _load_week_state()
         wk = int(st.get("week", 0))
         pairs = [tuple(x) for x in st.get("matchups", [])]
+
         mapping = {}
         for a, b in pairs:
             mapping[a] = b
             mapping[b] = a
 
-        global _current_week, _current_pairs, _current_matchups
         _current_week = wk if wk != 0 else None
         _current_pairs = pairs
         _current_matchups = mapping
+
         logger.info(f"Restored advance from file: WEEK={_current_week}, games={len(_current_pairs)}")
+
         if os.path.exists("data/week_cache.json"):
             logger.info("Week cache found on disk — flyer system ready")
         else:
@@ -2879,22 +2940,11 @@ async def on_ready():
     except Exception as e:
         logger.warning(f"Could not restore advance state: {e}")
 
-    # Start the AP reminder loop
-    bot.loop.create_task(ap_return_reminder_loop())
-
-    # Start the AP auto-post watcher
-    bot.loop.create_task(ap_trigger_watcher())
-
-    # start inactivity loop
-    # bot.loop.create_task(check_inactivity())  #This is Turned Off for now
-
-    logger.info(f'\nLogged in as {bot.user.name}')
-    logger.info(f'User ID: {bot.user.id}')
+    logger.info(f"User ID: {bot.user.id}")
 
     channels = bot.get_all_channels()
     for channel in channels:
         logger.info(f"Channel Name: {channel.name}, ID: {channel.id}, Category: {channel.category}")
-
 # Event to welcome new members to the server
 @bot.event
 async def on_member_join(member):

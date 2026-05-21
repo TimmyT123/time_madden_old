@@ -2945,31 +2945,53 @@ async def on_ready():
     channels = bot.get_all_channels()
     for channel in channels:
         logger.info(f"Channel Name: {channel.name}, ID: {channel.id}, Category: {channel.category}")
+
 # Event to welcome new members to the server
+RECRUIT_AREA_CHANNEL_ID = 1506802048916652032
+RECRUIT_ROLE_NAME = "Recruit"
+
 @bot.event
 async def on_member_join(member):
     nicknames_to_users_file()  # make sure available teams is up-to-date
-    channel = member.guild.system_channel  # Get the system channel
+
+    # Give the new user the Recruit role
+    recruit_role = nextcord.utils.get(member.guild.roles, name=RECRUIT_ROLE_NAME)
+    if recruit_role:
+        try:
+            await member.add_roles(recruit_role, reason="New member joined WURD recruit process")
+        except Exception as e:
+            print(f"Could not add Recruit role to {member}: {e}")
+
+    # Send welcome message to recruit-area
+    channel = member.guild.get_channel(RECRUIT_AREA_CHANNEL_ID)
+
     if channel is not None:
         welcome_message = (
             f"Welcome {member.mention} to WURD!!! :football::fire:\n\n"
-            "Please start by reviewing https://discord.com/channels/1144688789248282804/1144692100697423972.\n"
-            "If you have any questions, post in lobby-talk forum here and we'll be glad to answer.\n\n"
+            "You are currently in the **Recruit Area** while we get you through the WURD recruit process.\n\n"
+            "Please start by reviewing the league rules here:\n"
+            "https://discord.com/channels/1144688789248282804/1144692100697423972\n\n"
             "Next step: Complete the WURD application :point_right: https://wurd-madden.com/recruits/new\n\n"
             "Important: Communication matters here.\n"
-            "Make sure notifications are enabled for **WURD :trophy: CHAMPIONSHIP** (All Messages or @mentions).\n\n"
-            "Queue Process:\n"
-            "New users may start in the Queue while commissioners evaluate communication, availability, and readiness.\n"
-            "When a team opens — placement is based on preparedness, not order of arrival, at commissioner discretion.\n\n"
+            "Make sure notifications are enabled for **WURD :trophy: CHAMPIONSHIP** "
+            "(All Messages or @mentions).\n\n"
+            "Recruit Process:\n"
+            "New users start in the Recruit Area while commissioners evaluate communication, "
+            "availability, and readiness.\n"
+            "Approved recruits may be moved into the Queue when ready.\n\n"
             "Coaches:\n"
             "Real-life coaches are not allowed. Choose Offensive, Defensive, or Development coaches only.\n\n"
-            "Let us know which team you’re interested in :smiley:\n"
+            "Please let us know:\n"
+            "Which teams you are interested in :smiley:\n\n"
         )
+
         teams_message = await get_available_teams_output()
         full_message = welcome_message + teams_message
-        # Send the message in chunks if necessary
+
         for chunk in split_message(full_message):
             await channel.send(chunk)
+    else:
+        print("Recruit-area channel not found.")
 
 # ---------------------------------------
 

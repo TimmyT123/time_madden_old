@@ -99,6 +99,10 @@ GG_ALERT_MENTION_USER_ID = int(os.getenv("GG_ALERT_MENTION_USER_ID", "0") or 0) 
 
 GAME_STREAMS_FORUM_ID = int(os.getenv("GAME_STREAMS_FORUM_ID", "0") or 0)
 GAME_STREAMS_CHANNEL_ID = int(os.getenv("GAME_STREAMS_CHANNEL_ID", "0") or 0)
+STREAMERS_JSON_PATH = os.getenv(
+    "STREAMERS_JSON_PATH",
+    "/home/pi/projects/madden_flask_app/uploads/26969931/streamers.json"
+)
 LOGOS_DIR = os.getenv("LOGOS_DIR", "flyers/assets/logos")
 FLYER_OUT_DIR = os.getenv("FLYER_OUT_DIR", "./static/flyers")
 EVERYONE_MENTIONS = AllowedMentions(everyone=True, users=False, roles=False, replied_user=False)
@@ -2832,6 +2836,99 @@ async def sync_discord_members_to_json(bot):
 
     print(f"✅ Synced {len(members)} Discord members to {DISCORD_MEMBERS_FILE}")
 
+def detect_stream_platform(url: str) -> str:
+    u = (url or "").lower()
+
+    if "twitch.tv" in u:
+        return "twitch"
+
+    if "youtube.com" in u or "youtu.be" in u:
+        return "youtube"
+
+    return "unknown"
+
+
+def extract_streamer_name_from_url(url: str) -> str:
+    url = (url or "").strip().rstrip("/")
+    last = url.split("/")[-1]
+    return last.replace("@", "").lower()
+
+
+def load_streamers_json() -> list:
+    try:
+        if not os.path.exists(STREAMERS_JSON_PATH):
+            return []
+
+        with open(STREAMERS_JSON_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return data if isinstance(data, list) else []
+
+    except Exception as e:
+        logger.warning(f"[STREAMERS] Failed to load streamers.json: {e}")
+        return []
+
+
+def save_streamers_json(streamers: list) -> None:
+    try:
+        os.makedirs(os.path.dirname(STREAMERS_JSON_PATH), exist_ok=True)
+
+        tmp = STREAMERS_JSON_PATH + ".tmp"
+
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(streamers, f, indent=2)
+
+        os.replace(tmp, STREAMERS_JSON_PATH)
+
+    except Exception as e:
+        logger.warning(f"[STREAMERS] Failed to save streamers.json: {e}")
+
+
+def update_streamers_json_from_message(msg, url: str) -> bool:
+    platform = detect_stream_platform(url)
+
+    if platform == "unknown":
+        return False
+
+    streamer_name = extract_streamer_name_from_url(url)
+    team = extract_team_from_nick(getattr(msg.author, "display_name", "") or "")
+
+    if not team:
+        logger.warning(
+            f"[STREAMERS] Could not detect team for {msg.author.display_name}"
+        )
+        return False
+
+    streamers = load_streamers_json()
+
+    new_entry = {
+        "discord_id": str(msg.author.id),
+        "name": streamer_name,
+        "team": team,
+        "platform": platform,
+        "url": url
+    }
+
+    for existing in streamers:
+        same_discord_user = str(existing.get("discord_id", "")) == str(msg.author.id)
+        same_url = existing.get("url", "").rstrip("/").lower() == url.rstrip("/").lower()
+        same_name_platform = (
+            existing.get("name", "").lower() == streamer_name.lower()
+            and existing.get("platform", "").lower() == platform.lower()
+        )
+
+        if same_discord_user or same_url or same_name_platform:
+            existing.update(new_entry)
+            save_streamers_json(streamers)
+            logger.info(f"[STREAMERS] Updated {streamer_name} → {team}")
+            return True
+
+    streamers.append(new_entry)
+    save_streamers_json(streamers)
+
+    logger.info(f"[STREAMERS] Added {streamer_name} → {team}")
+    return True
+
 ### THIS IS A DEBUGGING COMMAND TEMP
 @bot.command(name="debug_advance")
 @commands.has_role(ADMIN_ROLE_NAME)
@@ -3232,9 +3329,19 @@ async def on_message(msg):
 
     # --- Text-channel flyer trigger for game-streams ----------------------------
     if msg.guild and GAME_STREAMS_CHANNEL_ID and msg.channel.id == GAME_STREAMS_CHANNEL_ID:
+        link = find_stream_link(msg.content or "")
+
+        if link:
+            updated_streamer = update_streamers_json_from_message(msg, link)
+
+            if updated_streamer:
+                try:
+                    await msg.add_reaction("📺")
+                except Exception:
+                    pass
+
         await handle_game_stream_post(bot, msg)
     # --- end text-channel flyer trigger -----------------------------------------
-
 
     # PUT ONE WORD COMMANDS AFTER THIS STATEMENT THAT EVERYONE CAN USE
 

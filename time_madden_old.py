@@ -2809,21 +2809,53 @@ async def logs_cmd(ctx, *, rest: str = ""):
 
 # ===== END BOT.LOG READER =====
 
-import json
-import os
 
-POWER_RANKINGS_FILE = "/home/pi/projects/madden_flask_app/uploads/26969931/power_rankings.json"
+MADDEN_UPLOADS_DIR = os.getenv(
+    "MADDEN_UPLOADS_DIR",
+    "/home/pi/projects/madden_flask_app/uploads"
+)
+
+DEFAULT_LEAGUE_ID = os.getenv("DEFAULT_LEAGUE_ID", "26969931")
+
+
+def get_latest_league_id():
+    latest_path = os.path.join(MADDEN_UPLOADS_DIR, "_latest.json")
+
+    try:
+        with open(latest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        league = str(data.get("league") or "").strip()
+        if league:
+            return league
+
+    except Exception as e:
+        logger.warning(f"Could not read latest league from {latest_path}: {e}")
+
+    return DEFAULT_LEAGUE_ID
+
+
+def get_power_rankings_file():
+    league_id = get_latest_league_id()
+    return os.path.join(
+        MADDEN_UPLOADS_DIR,
+        league_id,
+        "power_rankings.json"
+    )
 
 
 def load_power_rankings():
-    if not os.path.exists(POWER_RANKINGS_FILE):
+    path = get_power_rankings_file()
+
+    if not os.path.exists(path):
+        logger.warning(f"Power rankings file not found: {path}")
         return None
 
     try:
-        with open(POWER_RANKINGS_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(f"❌ Failed to load power rankings: {e}")
+        logger.warning(f"Failed to load power rankings from {path}: {e}")
         return None
 
 

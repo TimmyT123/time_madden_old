@@ -2809,6 +2809,77 @@ async def logs_cmd(ctx, *, rest: str = ""):
 
 # ===== END BOT.LOG READER =====
 
+import json
+import os
+
+POWER_RANKINGS_FILE = "/home/pi/projects/madden_flask_app/uploads/26969931/power_rankings.json"
+
+
+def load_power_rankings():
+    if not os.path.exists(POWER_RANKINGS_FILE):
+        return None
+
+    try:
+        with open(POWER_RANKINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"❌ Failed to load power rankings: {e}")
+        return None
+
+
+def format_power_rankings_message(data):
+    rankings = data.get("rankings", [])
+    if not rankings:
+        return None
+
+    week = data.get("week") or "Unknown Week"
+    week_label = week.replace("week_", "Week ").replace("pre_", "Preseason Week ")
+
+    lines = [
+        f"🏈 **WURD Power Rankings — {week_label} Top 10**",
+        "",
+        "*For fun only. Official Madden standings still control playoff position.*",
+        ""
+    ]
+
+    for r in rankings[:10]:
+        rank = r.get("rank")
+        team = r.get("team", "Unknown")
+        user = r.get("user", "Unknown")
+        record = r.get("record", "0-0")
+        ovr = r.get("ovr", "—")
+        to_diff = r.get("to_diff_pretty", "0")
+        pf_rank = r.get("pf_rank", "—")
+        pa_rank = r.get("pa_rank", "—")
+        off_rank = r.get("off_total_rank", "—")
+        def_rank = r.get("def_total_rank", "—")
+
+        lines.append(
+            f"**{rank}. {team}** ({user}) — {record} | "
+            f"OVR {ovr} | TO {to_diff} | PF #{pf_rank} | PA #{pa_rank} | "
+            f"OFF #{off_rank} | DEF #{def_rank}"
+        )
+
+    lines.append("")
+    lines.append("Keep winning and you’ll move up.")
+
+    return "\n".join(lines)
+
+
+async def post_power_rankings(channel):
+    data = load_power_rankings()
+    if not data:
+        await channel.send("⚠️ Power rankings file not found yet.")
+        return
+
+    message = format_power_rankings_message(data)
+    if not message:
+        await channel.send("⚠️ Power rankings are empty right now.")
+        return
+
+    await channel.send(message)
+
+
 DISCORD_MEMBERS_FILE = "/home/pi/projects/discord_members.json"
 
 async def sync_discord_members_to_json(bot):
@@ -3662,6 +3733,13 @@ async def on_message(msg):
                         await channel.send(chunk, allowed_mentions=AllowedMentions.none())
                         await safe_async_sleep(1.1)
 
+                # 🏈 Post Power Rankings after the weekly advance post
+                if ('all' not in msg_text) and parsed_week is not None and 1 <= parsed_week <= 18:
+                    try:
+                        await post_power_rankings(channel)
+                        await safe_async_sleep(1.1)
+                    except Exception as e:
+                        logger.warning(f"Power rankings post failed: {e}")
 
                 # For both 'week N' *and* 'pre N', build the game forums
                 if any(k in msg_text for k in ("week", "pre")):

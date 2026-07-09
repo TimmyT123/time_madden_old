@@ -3751,7 +3751,7 @@ async def on_message(msg):
                             f"**{advance.strftime('%A, %b %d @ ~%I:%M %p')} AZ**\n"
                             f"{timing_note}\n"
                             "If all User-vs-User games finish early, the advance may happen sooner.\n"
-                            "If games are still being played, commissioners will notify everyone of any delay.\n\n"
+                            "If games are still being played, commissioners will notify everyone of any delay.\n.\n"
                         )
 
                         await channel.send(

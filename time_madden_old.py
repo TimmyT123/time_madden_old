@@ -1655,35 +1655,72 @@ def _date_from_str(dstr: str):
     """Return a date object from 'YYYY-MM-DD' (no timezone math)."""
     return datetime.strptime(dstr, "%Y-%m-%d").date()
 
-def human_date(dstr: str) -> str:
-    """Pretty print the same calendar date (no tz shifting)."""
-    d = _date_from_str(dstr)
-    dummy = datetime(d.year, d.month, d.day)  # just for strftime parts
-    # Avoid %-d portability by injecting the day number
+# Add timedelta to the bot's datetime import:
+# from datetime import datetime, timedelta
+
+
+def human_date_from_date(d) -> str:
+    """Pretty-print a date object without timezone shifting."""
+    dummy = datetime(d.year, d.month, d.day)
     return f"{dummy.strftime('%a')}, {dummy.strftime('%b')} {d.day}, {dummy.strftime('%Y')}"
+
+
+def human_date(dstr: str) -> str:
+    """Pretty-print a YYYY-MM-DD string without timezone shifting."""
+    return human_date_from_date(_date_from_str(dstr))
+
+
+def ap_fw_eligible_date(start_dstr: str):
+    """
+    First 3 advances are CPU/FS. At 2 days per advance, CPU/FS/FW begins
+    with the fourth advance, 6 days after the AP start date.
+    """
+    return _date_from_str(start_dstr) + timedelta(days=6)
+
 
 def render_ap_bulletin():
     ap_users = sorted(load_ap_users(), key=lambda u: _date_from_str(u["until"]))
-    # use your alert timezone, not UTC
     today_str = datetime.now(_tz(AP_ALERT_TZ)).strftime("%b %d, %Y")
+
     if not ap_users:
-        return f"🏝️ Auto-Pilot (AP) Status — updated {today_str}\n\nNo users are on Auto-Pilot right now."
+        return (
+            f"🏝️ Auto-Pilot (AP) Status — updated {today_str}\n\n"
+            "No users are on Auto-Pilot right now."
+        )
 
     lines = [f"🏝️ Auto-Pilot (AP) Status — updated {today_str}", ""]
+
     for u in ap_users:
         disp = u.get("display", f"User {u.get('user_id')}")
         reason = u.get("reason", "").strip()
-        until = u.get("until", "")
+        start = (u.get("start") or "").strip()
+        until = (u.get("until") or "").strip()
         notes = u.get("notes", "").strip()
+
         header = f"• {disp}" + (f" — {reason}" if reason else "")
         lines.append(header)
+
+        if start:
+            lines.append(f"  AP started: {human_date(start)}")
+            lines.append(
+                "  CPU/FS/FW begins: "
+                f"{human_date_from_date(ap_fw_eligible_date(start))}"
+            )
+        else:
+            lines.append("  AP started: Not recorded")
+            lines.append("  CPU/FS/FW begins: Start date required")
+
         lines.append(f"  Returns: {human_date(until)}")
+
         if notes:
             lines.append(f"  Notes: {notes}")
+
         lines.append("")
 
-    lines.append("Notes:")
-    lines.append("• If they’re your opponent, play their CPU.")
+    lines.append("AP opponent options:")
+    lines.append("• First 3 advances: CPU or FS.")
+    lines.append("• Beginning with the 4th advance: CPU, FS, or FW with commissioner approval.")
+
     return "\n".join(lines).rstrip()
 
 async def post_ap_bulletin(bot):

@@ -3276,7 +3276,7 @@ def build_week_cache_from_current_state():
                 user_b = m
 
         if not user_a or not user_b:
-            logger.warning(f"Week cache: missing users for {a} vs {b}")
+            logger.warning(f"Week cache: skipping CPU matchup {a} vs {b}")
             continue
 
         game_id = f"{_current_week}_{a}_{b}"

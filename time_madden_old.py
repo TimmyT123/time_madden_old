@@ -113,6 +113,29 @@ WURD_LOGO_PATH = "flyers/assets/wurd_logo.png"
 
 ADVANCE_INFO_FILE = "/home/pi/projects/advance_info.json"
 
+# ===============================
+# COMMISSIONER ADVANCE REMINDERS
+# ===============================
+# #commish-rm channel. The .env value can override this default if needed.
+COMMISSIONER_ADVANCE_CHANNEL_ID = int(
+    os.getenv(
+        "COMMISSIONER_ADVANCE_CHANNEL_ID",
+        "1144691107209412618"
+    ) or 0
+)
+COMMISSIONER_ROLE_NAME = os.getenv(
+    "COMMISSIONER_ROLE_NAME",
+    ADMIN_ROLE_NAME
+).strip() or ADMIN_ROLE_NAME
+COMMISSIONER_ADVANCE_FOLLOWUP_MINUTES = int(
+    os.getenv("COMMISSIONER_ADVANCE_FOLLOWUP_MINUTES", "30") or 30
+)
+COMMISSIONER_ADVANCE_POLL_SECONDS = int(
+    os.getenv("COMMISSIONER_ADVANCE_POLL_SECONDS", "30") or 30
+)
+COMMISSIONER_ADVANCE_STATE_FILE = "data/commissioner_advance_reminder.json"
+_commissioner_claim_lock = asyncio.Lock()
+
 
 # =========================
 # GAMES OF THE WEEK SYSTEM
@@ -520,10 +543,305 @@ async def pre_advance_reminder_loop():
             logger.warning(f"pre_advance_reminder_loop error: {e}")
             await asyncio.sleep(120)
 
+
+def _load_commissioner_advance_state() -> dict:
+    try:
+        with open(COMMISSIONER_ADVANCE_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        logger.warning(f"Could not load commissioner advance state: {e}")
+        return {}
+
+
+def _save_commissioner_advance_state(state: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(COMMISSIONER_ADVANCE_STATE_FILE), exist_ok=True)
+        tmp = COMMISSIONER_ADVANCE_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, COMMISSIONER_ADVANCE_STATE_FILE)
+    except Exception as e:
+        logger.error(f"Could not save commissioner advance state: {e}")
+
+
+def _load_scheduled_advance_info() -> dict | None:
+    try:
+        with open(ADVANCE_INFO_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not data.get("advance_time_iso"):
+            return None
+        return data
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.warning(f"Could not load scheduled advance info: {e}")
+        return None
+
+
+def _parse_scheduled_advance(value: str) -> datetime:
+    tz = pytz.timezone("US/Arizona")
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = tz.localize(dt)
+    return dt.astimezone(tz)
+
+
+def _next_advance_week(current_week):
+    """Return the league stage commissioners should advance TO."""
+    try:
+        current_week = int(current_week)
+    except (TypeError, ValueError):
+        return None
+
+    # Madden preseason order used by this bot:
+    # PRE 1=-3, PRE 2=-2, PRE 3=-1, PRE 4/cut week=-4, then Week 1.
+    preseason_next = {
+        -3: -2,
+        -2: -1,
+        -1: -4,
+        -4: 1,
+    }
+    if current_week in preseason_next:
+        return preseason_next[current_week]
+
+    if 1 <= current_week <= 17:
+        return current_week + 1
+    if current_week == 18:
+        return 19  # Wild Card
+    if current_week == 19:
+        return 20  # Divisional
+    if current_week == 20:
+        return 21  # Conference Championships
+    if current_week == 21:
+        return 23  # WURD Bowl
+    if current_week == 23:
+        return "OFFSEASON"
+
+    return None
+
+
+def _advance_week_label(week) -> str:
+    if isinstance(week, str) and week.upper() == "OFFSEASON":
+        return "Offseason"
+
+    try:
+        week = int(week)
+    except (TypeError, ValueError):
+        return "Next league stage"
+
+    if week == -4:
+        return "Preseason Week 4 (Cut Week)"
+    if week in (-3, -2, -1):
+        return f"Preseason Week {week + 4}"
+    if week == 19:
+        return "Wild Card"
+    if week == 20:
+        return "Divisional Round"
+    if week == 21:
+        return "Conference Championships"
+    if week == 23:
+        return "WURD Bowl"
+    return f"Week {week}"
+
+
+def _format_advance_date(advance_dt: datetime) -> str:
+    clock = advance_dt.strftime("%I:%M %p").lstrip("0")
+    return f"{advance_dt.strftime('%A, %B %d, %Y')} at {clock} AZ"
+
+
+def _commissioner_role(guild: nextcord.Guild):
+    return nextcord.utils.get(guild.roles, name=COMMISSIONER_ROLE_NAME)
+
+
+def _is_commissioner(member: nextcord.Member | None) -> bool:
+    if member is None or getattr(member, "bot", False):
+        return False
+
+    try:
+        if int(member.id) in AUTHORIZED_USERS:
+            return True
+    except Exception:
+        pass
+
+    return any(role.name == COMMISSIONER_ROLE_NAME for role in member.roles)
+
+
+def _build_commissioner_advance_message(
+    guild: nextcord.Guild,
+    advance_to_week,
+    advance_dt: datetime,
+    claimed_by: int | None = None
+) -> str:
+    role = _commissioner_role(guild)
+    commissioner_text = role.mention if role else "Commissioners"
+
+    lines = [
+        "🚨 **WURD ADVANCE IS DUE**",
+        f"**Advance league to:** {_advance_week_label(advance_to_week)}",
+        f"**Scheduled:** {_format_advance_date(advance_dt)}",
+        "",
+    ]
+
+    if claimed_by:
+        lines.append(f"👍 **Claimed by:** <@{claimed_by}>")
+        lines.append("Other commissioners now know this advance is covered.")
+    else:
+        lines.append(f"{commissioner_text} — react with 👍 to claim this advance.")
+        lines.append("The first commissioner who reacts will be shown here.")
+
+    return "\n".join(lines)
+
+
+def _new_commissioner_advance_state(info: dict, advance_dt: datetime) -> dict:
+    current_week = info.get("current_week", info.get("week"))
+    advance_to_week = info.get("advance_to_week", _next_advance_week(current_week))
+    advance_iso = advance_dt.isoformat()
+    return {
+        "advance_key": f"{current_week}|{advance_to_week}|{advance_iso}",
+        "week": current_week,
+        "current_week": current_week,
+        "advance_to_week": advance_to_week,
+        "advance_time_iso": advance_iso,
+        "channel_id": COMMISSIONER_ADVANCE_CHANNEL_ID,
+        "reminder_message_id": None,
+        "claimed_by": None,
+        "claimed_at": None,
+        "followup_sent": False,
+    }
+
+
+async def _fetch_commissioner_reminder_message(state: dict):
+    channel_id = int(state.get("channel_id") or 0)
+    message_id = int(state.get("reminder_message_id") or 0)
+    if not channel_id or not message_id:
+        return None
+
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception:
+            return None
+
+    try:
+        return await channel.fetch_message(message_id)
+    except Exception:
+        return None
+
+
+async def commissioner_advance_reminder_loop():
+    await bot.wait_until_ready()
+    await asyncio.sleep(10)
+
+    while not bot.is_closed():
+        try:
+            if not COMMISSIONER_ADVANCE_CHANNEL_ID:
+                await asyncio.sleep(120)
+                continue
+
+            info = _load_scheduled_advance_info()
+            if not info:
+                await asyncio.sleep(COMMISSIONER_ADVANCE_POLL_SECONDS)
+                continue
+
+            advance_dt = _parse_scheduled_advance(info["advance_time_iso"])
+            now = datetime.now(pytz.timezone("US/Arizona"))
+            current_week = info.get("current_week", info.get("week"))
+            advance_to_week = info.get("advance_to_week", _next_advance_week(current_week))
+            expected_key = f"{current_week}|{advance_to_week}|{advance_dt.isoformat()}"
+
+            state = _load_commissioner_advance_state()
+            if state.get("advance_key") != expected_key:
+                state = _new_commissioner_advance_state(info, advance_dt)
+                _save_commissioner_advance_state(state)
+
+            if now < advance_dt:
+                await asyncio.sleep(COMMISSIONER_ADVANCE_POLL_SECONDS)
+                continue
+
+            guild = bot.get_guild(GUILD_ID)
+            if not guild:
+                await asyncio.sleep(COMMISSIONER_ADVANCE_POLL_SECONDS)
+                continue
+
+            channel = bot.get_channel(COMMISSIONER_ADVANCE_CHANNEL_ID)
+            if channel is None:
+                try:
+                    channel = await bot.fetch_channel(COMMISSIONER_ADVANCE_CHANNEL_ID)
+                except Exception as e:
+                    logger.warning(f"Commissioner advance channel not found: {e}")
+                    await asyncio.sleep(120)
+                    continue
+
+            # Post the due-time reminder once.
+            if not state.get("reminder_message_id"):
+                content = _build_commissioner_advance_message(
+                    guild,
+                    advance_to_week,
+                    advance_dt
+                )
+                reminder = await channel.send(
+                    content,
+                    allowed_mentions=AllowedMentions(roles=True, users=False, everyone=False)
+                )
+                await reminder.add_reaction("👍")
+
+                state["channel_id"] = channel.id
+                state["reminder_message_id"] = reminder.id
+                _save_commissioner_advance_state(state)
+                logger.info(
+                    "Commissioner advance reminder posted for %s",
+                    _format_advance_date(advance_dt)
+                )
+
+            # If nobody claims it, post one follow-up 30 minutes later.
+            followup_time = advance_dt + timedelta(
+                minutes=COMMISSIONER_ADVANCE_FOLLOWUP_MINUTES
+            )
+            if (
+                now >= followup_time
+                and not state.get("claimed_by")
+                and not state.get("followup_sent")
+            ):
+                reminder = await _fetch_commissioner_reminder_message(state)
+                jump_url = reminder.jump_url if reminder else None
+                role = _commissioner_role(guild)
+                commissioner_text = role.mention if role else "Commissioners"
+
+                followup_lines = [
+                    "⏰ **Advance is still unclaimed**",
+                    f"**Advance league to:** {_advance_week_label(state.get('advance_to_week', _next_advance_week(state.get('week'))))}",
+                    f"**Scheduled:** {_format_advance_date(advance_dt)}",
+                    f"{commissioner_text} — please react with 👍 on the original reminder.",
+                ]
+                if jump_url:
+                    followup_lines.append(f"[Go to the original reminder]({jump_url})")
+
+                await channel.send(
+                    "\n".join(followup_lines),
+                    allowed_mentions=AllowedMentions(roles=True, users=False, everyone=False)
+                )
+                state["followup_sent"] = True
+                _save_commissioner_advance_state(state)
+                logger.info("Unclaimed commissioner advance follow-up posted.")
+
+            await asyncio.sleep(COMMISSIONER_ADVANCE_POLL_SECONDS)
+
+        except Exception as e:
+            logger.warning(f"commissioner_advance_reminder_loop error: {e}")
+            await asyncio.sleep(120)
+
+
 def write_advance_file(advance_dt, week):
     try:
+        advance_to_week = _next_advance_week(week)
         data = {
-            "week": week,
+            "week": week,  # kept for compatibility with existing readers
+            "current_week": week,
+            "advance_to_week": advance_to_week,
             "advance_time_iso": advance_dt.isoformat(),
             "advance_display": advance_dt.strftime("%A, %b %d @ ~%I:%M %p AZ"),
             "status_text": f"Next Advance: {advance_dt.strftime('%A, %b %d @ ~%I:%M %p AZ')}",
@@ -3118,6 +3436,7 @@ async def on_ready():
     # Start background loops only once
     if not startup_loops_started:
         bot.loop.create_task(pre_advance_reminder_loop())
+        bot.loop.create_task(commissioner_advance_reminder_loop())
         bot.loop.create_task(ap_return_reminder_loop())
         bot.loop.create_task(ap_trigger_watcher())
 
@@ -3370,6 +3689,80 @@ async def retry_export_until_changed():
         logger.info("Export retry loop finished.")
 
 # ---------------------------------------------------------------
+
+
+# First commissioner to react with 👍 claims the scheduled advance.
+@bot.event
+async def on_raw_reaction_add(payload: nextcord.RawReactionActionEvent):
+    if not bot.user or payload.user_id == bot.user.id:
+        return
+    if str(payload.emoji) != "👍":
+        return
+
+    state = _load_commissioner_advance_state()
+    if (
+        int(state.get("reminder_message_id") or 0) != payload.message_id
+        or int(state.get("channel_id") or 0) != payload.channel_id
+    ):
+        return
+
+    guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
+    if not guild:
+        return
+
+    member = payload.member or guild.get_member(payload.user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(payload.user_id)
+        except Exception:
+            return
+
+    async with _commissioner_claim_lock:
+        # Reload inside the lock so two nearly simultaneous reactions cannot both win.
+        state = _load_commissioner_advance_state()
+        if int(state.get("reminder_message_id") or 0) != payload.message_id:
+            return
+
+        reminder = await _fetch_commissioner_reminder_message(state)
+
+        if not _is_commissioner(member):
+            if reminder:
+                try:
+                    await reminder.remove_reaction(payload.emoji, member)
+                except Exception:
+                    pass
+            return
+
+        existing_claim = state.get("claimed_by")
+        if existing_claim:
+            # Keep the first commissioner as the only human claim reaction.
+            if int(existing_claim) != member.id and reminder:
+                try:
+                    await reminder.remove_reaction(payload.emoji, member)
+                except Exception:
+                    pass
+            return
+
+        state["claimed_by"] = member.id
+        state["claimed_at"] = datetime.now(pytz.utc).isoformat()
+        _save_commissioner_advance_state(state)
+
+        try:
+            advance_dt = _parse_scheduled_advance(state["advance_time_iso"])
+            content = _build_commissioner_advance_message(
+                guild,
+                state.get("advance_to_week", _next_advance_week(state.get("week"))),
+                advance_dt,
+                claimed_by=member.id
+            )
+            if reminder:
+                await reminder.edit(
+                    content=content,
+                    allowed_mentions=AllowedMentions.none()
+                )
+            logger.info("Advance claimed by %s (%s)", member.display_name, member.id)
+        except Exception as e:
+            logger.warning(f"Could not edit claimed advance reminder: {e}")
 
 
 # Event handler for processing incoming messages

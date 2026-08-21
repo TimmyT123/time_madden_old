@@ -43,6 +43,18 @@ TEAM_ALIASES = {
 }
 
 
+TEAM_FULL_NAMES = {
+    "ARI":"Arizona Cardinals", "ATL":"Atlanta Falcons", "BAL":"Baltimore Ravens", "BUF":"Buffalo Bills",
+    "CAR":"Carolina Panthers", "CHI":"Chicago Bears", "CIN":"Cincinnati Bengals", "CLE":"Cleveland Browns",
+    "DAL":"Dallas Cowboys", "DEN":"Denver Broncos", "DET":"Detroit Lions", "GB":"Green Bay Packers",
+    "HOU":"Houston Texans", "IND":"Indianapolis Colts", "JAX":"Jacksonville Jaguars", "KC":"Kansas City Chiefs",
+    "LV":"Las Vegas Raiders", "LAC":"Los Angeles Chargers", "LAR":"Los Angeles Rams", "MIA":"Miami Dolphins",
+    "MIN":"Minnesota Vikings", "NE":"New England Patriots", "NO":"New Orleans Saints", "NYG":"New York Giants",
+    "NYJ":"New York Jets", "PHI":"Philadelphia Eagles", "PIT":"Pittsburgh Steelers", "SEA":"Seattle Seahawks",
+    "SF":"San Francisco 49ers", "TB":"Tampa Bay Buccaneers", "TEN":"Tennessee Titans", "WAS":"Washington Commanders",
+}
+FULL_TEAM_ALIASES = {name.upper(): code for code, name in TEAM_FULL_NAMES.items()}
+
 # ---- Context-aware !help (only active phase) ----
 
 DRAW_PUBLIC = {
@@ -67,6 +79,7 @@ DRAFT_PUBLIC = {
 }
 DRAFT_ADMIN = {
     "startdraft": "Begin the single-pass team draft (no rounds/timer).",
+    "pickfromlist": "Use the current owner's highest-ranked available saved team preference.",
     "skip": "Skip the current user and move to the next.",
     "undo": "Undo the last pick (returns team to the pool; puts that user back on the clock).",
     "enddraft": "End/close the draft (posts summary if enabled).",
@@ -74,6 +87,16 @@ DRAFT_ADMIN = {
 }
 
 
+PREFERENCE_PUBLIC = {
+    "preferences": "Open a private form to set/update your ranked M27 team list.",
+    "mychoices": "DM yourself your saved ranked team list (during the draft it marks available/taken teams).",
+    "clearmychoices": "Delete your own saved team preference list.",
+    "notchoices": "List active owners who have not submitted any team preferences yet (no pings).",
+}
+PREFERENCE_ADMIN = {
+    "remindchoices": "Ping active owners who have not submitted a preference list yet.",
+    "resetchoices": "Clear every saved team preference list without resetting the number draw.",
+}
 
 # ==== BOT ====
 intents = nextcord.Intents.default()
@@ -100,7 +123,8 @@ def fresh_state():
         "last_spin": None,        # latest live wheel event
         "spin_history": [],       # public-friendly recent spin events for the WURD wheel page
         "owner_names": {},        # {uid: {username, display_name}} for final order display
-        "spin_active_until": 0.0  # prevents overlapping wheel animations
+        "spin_active_until": 0.0, # prevents overlapping wheel animations
+        "team_preferences": {}   # {user_id: [team_code, ...]} private ranked backup lists
     }
 
 def load_state():
@@ -123,6 +147,7 @@ def load_state():
     loaded.setdefault("spin_history", [])
     loaded.setdefault("owner_names", {})
     loaded.setdefault("spin_active_until", 0.0)
+    loaded.setdefault("team_preferences", {})
     return loaded
 
 def save_state(state):
@@ -135,6 +160,85 @@ def save_state(state):
 state = load_state()
 
 # ==== UI ====
+class TeamPreferenceModal(nextcord.ui.Modal):
+    """Private editor for an owner's ranked Madden 27 team preferences."""
+
+    def __init__(self, user_id: str):
+        super().__init__(title="Madden 27 Team Preferences", timeout=300)
+        self.user_id = str(user_id)
+        existing = (state.get("team_preferences") or {}).get(self.user_id, [])
+        default_text = "\n".join(
+            f"{i}. {TEAM_FULL_NAMES.get(code, code)}"
+            for i, code in enumerate(existing, start=1)
+        )
+        self.ranked_teams = nextcord.ui.TextInput(
+            label="Rank teams: 1st choice, 2nd, 3rd...",
+            placeholder="1. Falcons\n2. Ravens\n3. Bills\n...",
+            style=nextcord.TextInputStyle.paragraph,
+            required=True,
+            max_length=1600,
+            default_value=default_text or None,
+        )
+        self.add_item(self.ranked_teams)
+
+    async def callback(self, interaction: nextcord.Interaction):
+        if str(interaction.user.id) != self.user_id:
+            await interaction.response.send_message("That preference form belongs to another user.", ephemeral=True)
+            return
+
+        teams, invalid, duplicates = _parse_preference_text(str(self.ranked_teams.value or ""))
+        if invalid:
+            shown = ", ".join(f"`{x}`" for x in invalid[:8])
+            extra = f" (+{len(invalid)-8} more)" if len(invalid) > 8 else ""
+            await interaction.response.send_message(
+                "❌ I couldn't recognize: " + shown + extra +
+                "\nUse NFL abbreviations, nicknames, or full team names. Nothing was saved.",
+                ephemeral=True,
+            )
+            return
+        if not teams:
+            await interaction.response.send_message("Enter at least one NFL team. Nothing was saved.", ephemeral=True)
+            return
+
+        async with lock:
+            state.setdefault("team_preferences", {})[self.user_id] = teams
+            member = interaction.user
+            state.setdefault("owner_names", {})[self.user_id] = {
+                "username": getattr(member, "name", str(member)),
+                "display_name": getattr(member, "display_name", getattr(member, "name", str(member))),
+            }
+            save_state(state)
+
+        preview = " > ".join(teams[:12])
+        if len(teams) > 12:
+            preview += f" > … (+{len(teams)-12} more)"
+        dup_note = f"\n♻️ {len(duplicates)} duplicate(s) were ignored." if duplicates else ""
+        guarantee_note = (
+            "\n✅ You ranked all 32 teams, so the list can always supply a backup pick."
+            if len(teams) == 32 else
+            f"\n💡 You saved {len(teams)} team(s). You can rank all 32 if you want a guaranteed backup."
+        )
+        await interaction.response.send_message(
+            f"✅ **Saved privately.**\n{preview}{dup_note}{guarantee_note}\n"
+            "You can update this list any time before your team is picked.",
+            ephemeral=True,
+        )
+
+
+class PreferencePromptView(View):
+    """Short-lived launcher used by !preferences; only the requester may open it."""
+    def __init__(self, user_id: int):
+        super().__init__(timeout=180)
+        self.user_id = int(user_id)
+
+    @nextcord.ui.button(label="Set / Update My Team List", style=nextcord.ButtonStyle.blurple, emoji="📋")
+    async def open_preferences(self, button: Button, interaction: nextcord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This button belongs to another owner. Type `!preferences` for your own.", ephemeral=True)
+            return
+        await interaction.response.send_modal(TeamPreferenceModal(str(interaction.user.id)))
+
+
 class NumberView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -151,6 +255,19 @@ class NumberView(View):
                     row=0,
                 )
             )
+
+    @nextcord.ui.button(
+        label="Team Preferences",
+        style=nextcord.ButtonStyle.blurple,
+        custom_id="team_selection_preferences_open",
+        emoji="📋",
+        row=1,
+    )
+    async def set_preferences(self, button: Button, interaction: nextcord.Interaction):
+        if interaction.user.bot:
+            await interaction.response.send_message("Bots don't need team preferences.", ephemeral=True)
+            return
+        await interaction.response.send_modal(TeamPreferenceModal(str(interaction.user.id)))
 
     @nextcord.ui.button(
         label="Spin My Number",
@@ -342,6 +459,19 @@ class ClosedView(View):
                     row=0,
                 )
             )
+
+    @nextcord.ui.button(
+        label="Team Preferences",
+        style=nextcord.ButtonStyle.blurple,
+        custom_id="team_selection_preferences_closed",
+        emoji="📋",
+        row=1,
+    )
+    async def set_preferences(self, button: Button, interaction: nextcord.Interaction):
+        if interaction.user.bot:
+            await interaction.response.send_message("Bots don't need team preferences.", ephemeral=True)
+            return
+        await interaction.response.send_modal(TeamPreferenceModal(str(interaction.user.id)))
 
 @bot.event
 async def on_ready():
@@ -580,10 +710,43 @@ async def get_eligible_members(guild: nextcord.Guild):
 def _norm_team(s):
     if not s:
         return ""
-    key = s.strip().upper()
+    key = str(s).strip().upper()
     if key in NFL_TEAMS:
         return key
-    return TEAM_ALIASES.get(key, "")
+    return TEAM_ALIASES.get(key, "") or FULL_TEAM_ALIASES.get(key, "")
+
+def _parse_preference_text(text: str):
+    """Return (team_codes, invalid_items, duplicate_items), preserving rank order."""
+    normalized = str(text or "").replace(";", "\n").replace(",", "\n").replace(">", "\n")
+    teams, invalid, duplicates = [], [], []
+    seen = set()
+    for raw in normalized.splitlines():
+        item = raw.strip()
+        if not item:
+            continue
+        item = re.sub(r"^\s*\d+\s*(?:[.)\-:]\s*|\s+)", "", item).strip()
+        code = _norm_team(item)
+        if not code:
+            invalid.append(item or raw.strip())
+            continue
+        if code in seen:
+            duplicates.append(code)
+            continue
+        seen.add(code)
+        teams.append(code)
+    return teams, invalid, duplicates
+
+def _format_preferences(uid: str, draft_available=None) -> str:
+    prefs = (state.get("team_preferences") or {}).get(str(uid), [])
+    if not prefs:
+        return "No saved team preferences."
+    available_set = set(draft_available) if draft_available is not None else None
+    lines = [f"**Your Madden 27 Team Preferences ({len(prefs)}):**"]
+    for rank, code in enumerate(prefs, start=1):
+        name = TEAM_FULL_NAMES.get(code, code)
+        marker = "" if available_set is None else (" ✅ available" if code in available_set else " ❌ taken")
+        lines.append(f"{rank}. **{code}** — {name}{marker}")
+    return "\n".join(lines)
 
 def _current_uid():
     d = state.get("draft") or {}
@@ -696,8 +859,11 @@ async def startorder(ctx):
     await disable_button_message()
     await unpin_button_message()
 
-    # Fresh state
+    # Fresh number/draft state, but preserve private team preferences.
+    # Owners can submit them days early; use !resetchoices if you really want to wipe them.
+    saved_preferences = dict(state.get("team_preferences") or {})
     state = fresh_state()
+    state["team_preferences"] = saved_preferences
     save_state(state)
 
     # Housekeeping: unpin any previous final-results pins
@@ -708,9 +874,11 @@ async def startorder(ctx):
     sent = await ctx.send(
         "🎡 **Madden 27 Official Team Selection Number Draw**\n"
         "1. Open the **Live Wheel** so you can watch it spin.\n"
-        "2. Click **Spin My Number** when you are ready.\n\n"
+        "2. Click **Spin My Number** when you are ready.\n"
+        "3. Use **Team Preferences** any time to privately rank your Madden 27 teams in advance.\n\n"
         "The wheel starts with **32 numbers**. Every result is randomly selected from the remaining pool "
-        "(no duplicates, no rerolls). Owners who do not spin before the draw closes are placed at the end.",
+        "(no duplicates, no rerolls). Owners who do not spin before the draw closes are placed at the end.\n"
+        "Your preference list is a backup only — your live manual team pick always wins.",
         view=view,
         allowed_mentions=ALLOWED,
     )
@@ -842,6 +1010,91 @@ async def remindnotpicked(ctx):
     except Exception as e:
         await ctx.send(f"Could not send reminders: `{e}`", allowed_mentions=ALLOWED)
 
+@bot.command(name="preferences", aliases=["choices", "teamchoices"])
+async def preferences_cmd(ctx):
+    """Open a private modal launcher for the requesting owner's ranked team list."""
+    await ctx.send(
+        f"📋 {ctx.author.mention} click below to privately set or update your Madden 27 team preferences. "
+        "The rankings and save confirmation are private.",
+        view=PreferencePromptView(ctx.author.id),
+        allowed_mentions=ALLOWED,
+        delete_after=180,
+    )
+
+@bot.command(name="mychoices")
+async def mychoices(ctx):
+    """DM the requesting owner their private ranked list."""
+    d = state.get("draft") or {}
+    available = d.get("available") if d.get("open") else None
+    text = _format_preferences(str(ctx.author.id), available)
+    try:
+        await ctx.author.send(text + "\n\nUse `!preferences` in team-selection to edit it.")
+        await ctx.send(f"📬 {ctx.author.mention} I sent your saved team preferences by DM.", allowed_mentions=ALLOWED, delete_after=20)
+    except Exception:
+        await ctx.send(
+            f"{ctx.author.mention} I couldn't DM you. Use `!preferences`; the private form will open with your saved list pre-filled.",
+            allowed_mentions=ALLOWED,
+        )
+
+@bot.command(name="clearmychoices")
+async def clearmychoices(ctx):
+    uid = str(ctx.author.id)
+    async with lock:
+        existed = bool((state.get("team_preferences") or {}).pop(uid, None))
+        save_state(state)
+    await ctx.send(
+        "🗑️ Your saved team preference list was cleared." if existed else "You did not have a saved team preference list.",
+        allowed_mentions=ALLOWED, delete_after=25,
+    )
+
+@bot.command(name="notchoices")
+async def notchoices(ctx):
+    """List active owners with no preference list; rankings remain private."""
+    try:
+        eligible = await get_eligible_members(ctx.guild)
+        prefs = state.get("team_preferences") or {}
+        pending = [m for m in eligible if not prefs.get(str(m.id))]
+        pending.sort(key=lambda m: m.display_name.lower())
+        submitted = len(eligible) - len(pending)
+        if not pending:
+            await ctx.send(f"✅ All **{len(eligible)}** active owners have submitted team preferences.", allowed_mentions=ALLOWED)
+            return
+        lines = [f"**Team preference lists:** {submitted}/{len(eligible)} submitted", f"**Still missing ({len(pending)}):**"]
+        lines.extend(f"• {m.display_name}" for m in pending)
+        await ctx.send("\n".join(lines), allowed_mentions=ALLOWED)
+    except Exception as e:
+        await ctx.send(f"Could not compute preference status: `{e}`", allowed_mentions=ALLOWED)
+
+@bot.command(name="remindchoices")
+@commands.has_permissions(manage_guild=True)
+async def remindchoices(ctx):
+    """Admin: ping active owners who still have no saved preference list."""
+    try:
+        eligible = await get_eligible_members(ctx.guild)
+        prefs = state.get("team_preferences") or {}
+        pending = [m for m in eligible if not prefs.get(str(m.id))]
+        if not pending:
+            await ctx.send("Everyone active has submitted team preferences ✅", allowed_mentions=ALLOWED)
+            return
+        mentions = " ".join(m.mention for m in pending)
+        await ctx.send(
+            f"{mentions}\n📋 Please submit a private Madden 27 team preference list now so we have a backup if you're unavailable during team selection. "
+            "Type `!preferences` or use the **Team Preferences** button on the number-draw post.",
+            allowed_mentions=nextcord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False),
+        )
+    except Exception as e:
+        await ctx.send(f"Could not send preference reminders: `{e}`", allowed_mentions=ALLOWED)
+
+@bot.command(name="resetchoices")
+@commands.has_permissions(manage_guild=True)
+async def resetchoices(ctx):
+    """Admin: clear all saved preference lists without touching number/draft state."""
+    async with lock:
+        count = len(state.get("team_preferences") or {})
+        state["team_preferences"] = {}
+        save_state(state)
+    await ctx.send(f"🗑️ Cleared **{count}** saved team preference list(s). The number draw was not changed.", allowed_mentions=ALLOWED)
+
 def _send_chunks_factory(max_len=1900):
     async def _send_chunks(ctx, text):
         lines = text.splitlines()
@@ -875,7 +1128,7 @@ async def closeorder(ctx):
             return
         if not state.get("assigned"):  # guard against empty
             await ctx.send(
-                "Cannot close: no numbers have been assigned yet. Have users click **Get My Number** first.",
+                "Cannot close: no numbers have been assigned yet. Have users click **Spin My Number** first.",
                 allowed_mentions=ALLOWED
             )
             return
@@ -966,11 +1219,13 @@ async def showfinal(ctx):
 @bot.command()
 @commands.has_permissions(manage_guild=True)
 async def resetorder(ctx):
-    """Reset everything."""
+    """Reset number/draft state while preserving saved team preferences."""
     global state
+    saved_preferences = dict(state.get("team_preferences") or {})
     state = fresh_state()
+    state["team_preferences"] = saved_preferences
     save_state(state)
-    await ctx.send("Order has been reset. Use `!startorder` to begin again.")
+    await ctx.send("Order has been reset. Saved team preferences were kept. Use `!startorder` to begin again.")
 
 # ==== RUN ====
 TOKEN = os.getenv("TEAM_ORDER_TOKEN")  # <-- unique var for this bot
@@ -1023,6 +1278,8 @@ async def startdraft(ctx):
         f"**Draft started.** {who} is on the clock.\n"
         "➡️ To make a pick, type `!pick TEAMCODE` (e.g., `!pick DAL`) "
         "or `!pick TeamName` (e.g., `!pick Cowboys`).\n"
+        "Saved team preferences are **backup lists only**; a manual pick always wins. "
+        "If an owner is unavailable, an admin can use `!pickfromlist` to take their highest-ranked available team.\n"
         "If you type it wrong, I’ll remind you of the correct format.",
         allowed_mentions=ALLOWED
     )
@@ -1179,6 +1436,61 @@ async def pick_error(ctx, error):
     else:
         # Let other errors bubble to the global handler if you add one later
         raise error
+
+@bot.command(name="pickfromlist")
+@commands.has_permissions(manage_guild=True)
+async def pickfromlist(ctx):
+    """Admin: use the current owner's highest-ranked saved preference still available."""
+    msg_primary = None
+    msg_followup = None
+    draft_just_completed = False
+    async with lock:
+        d = state.get("draft")
+        if not d or not d.get("open"):
+            msg_primary = "Draft not started. Use `!startdraft`."
+        else:
+            uid = _current_uid()
+            if uid is None:
+                msg_primary = "Draft is already complete."
+            else:
+                prefs = (state.get("team_preferences") or {}).get(uid, [])
+                member = ctx.guild.get_member(int(uid))
+                who = member.mention if member else f"<@{uid}>"
+                if not prefs:
+                    msg_primary = f"📋 {who} has **no saved team preference list**. They remain on the clock."
+                else:
+                    chosen = rank = None
+                    for i, code in enumerate(prefs, start=1):
+                        if code in d["available"]:
+                            chosen, rank = code, i
+                            break
+                    if not chosen:
+                        msg_primary = f"📋 None of {who}'s **{len(prefs)} saved preferences** are still available. They remain on the clock."
+                    else:
+                        d["available"].remove(chosen)
+                        d["picks"][uid] = chosen
+                        d["history"].append({
+                            "uid": uid, "team": chosen, "by": str(ctx.author.id),
+                            "from_preferences": True, "preference_rank": rank,
+                        })
+                        save_state(state)
+                        team_name = TEAM_FULL_NAMES.get(chosen, chosen)
+                        msg_primary = f"📋 {who} gets **{team_name} ({chosen})** from their saved preference list (**choice #{rank}**, highest one still available)."
+                        _advance_picker()
+                        next_uid = _current_uid()
+                        if next_uid is None:
+                            draft_just_completed = True
+                        else:
+                            m = ctx.guild.get_member(int(next_uid))
+                            next_who = m.mention if m else f"<@{next_uid}>"
+                            msg_followup = f"{next_who} is on the clock. Use `!pick <TEAM>`."
+    if msg_primary:
+        await ctx.send(msg_primary, allowed_mentions=ALLOWED)
+    if draft_just_completed:
+        summary = format_final_teams(ctx.guild, "Final Teams")
+        await ctx.send("**Draft complete.**\n" + summary, allowed_mentions=ALLOWED)
+    elif msg_followup:
+        await ctx.send(msg_followup, allowed_mentions=ALLOWED)
 
 @bot.command(name="pickfor", aliases=["forcepick"])
 @commands.has_permissions(manage_guild=True)
@@ -1343,7 +1655,7 @@ async def help_cmd(ctx):
     is_admin = getattr(ctx.author.guild_permissions, "manage_guild", False)
     draw_open, draft_open, draw_closed = _phase_flags()
 
-    lines = ["**WURD25 Team Order & Draft – Help**", ""]
+    lines = ["**WURD M27 Team Order & Draft – Help**", ""]
 
     if draft_open:
         # TEAM DRAFT is active
@@ -1387,10 +1699,20 @@ async def help_cmd(ctx):
         if "finalteams" in bot.all_commands:
             lines.append("• You can view `!finalteams` at any time (if enabled).")
 
+    lines.append("")
+    lines.append("__Private Team Preferences (available anytime)__")
+    for n in _existing(list(PREFERENCE_PUBLIC.keys()), bot):
+        lines.append(f"• **!{n}** — {PREFERENCE_PUBLIC[n]}")
+    if is_admin:
+        lines.append("_Preference admin_")
+        for n in _existing(list(PREFERENCE_ADMIN.keys()), bot):
+            lines.append(f"• **!{n}** — {PREFERENCE_ADMIN[n]}")
+    lines.append("• Rankings stay private; `!notchoices` only shows who has/hasn't submitted.")
+    lines.append("• A saved list never overrides an owner's live manual pick.")
+
     msg = "\n".join(lines)
-    if len(msg) > 1900:
-        msg = msg[:1900] + "\n…"
-    await ctx.send(msg, allowed_mentions=ALLOWED)
+    send_chunks = _send_chunks_factory()
+    await send_chunks(ctx, msg)
 
 
 bot.run(TOKEN)

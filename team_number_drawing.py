@@ -157,6 +157,8 @@ class NumberView(View):
         row=0,
     )
     async def get_number(self, button: Button, interaction: nextcord.Interaction):
+        # Fast local checks first. Discord component interactions must be acknowledged
+        # within a few seconds, so do not perform network calls before we respond/defer.
         if state.get("closed"):
             await interaction.response.send_message("The draw is closed.", ephemeral=True)
             return
@@ -165,24 +167,7 @@ class NumberView(View):
             await interaction.response.send_message("Bots can’t draw numbers.", ephemeral=True)
             return
 
-        member = await get_fresh_interaction_member(interaction)
-        if not member_is_eligible(member):
-            seen_roles = [
-                getattr(role, "name", "")
-                for role in (getattr(member, "roles", []) or [])
-                if getattr(role, "name", "") != "@everyone"
-            ]
-            seen_text = ", ".join(seen_roles) if seen_roles else "(no named roles found)"
-            await interaction.response.send_message(
-                f"You need {_eligible_role_text()} to spin for a number.\n"
-                f"Discord currently shows me these roles for you: **{seen_text}**",
-                ephemeral=True,
-            )
-            return
-
-        # Reject stale buttons from an older drawing. Persistent Discord views can
-        # survive bot restarts, so the custom_id alone is not enough to prove this
-        # is the current official draw message.
+        # Reject stale buttons from an older drawing before doing any API work.
         ref = state.get("button_message") or {}
         current_message_id = ref.get("message_id")
         current_channel_id = ref.get("channel_id")
@@ -197,28 +182,47 @@ class NumberView(View):
             )
             return
 
+        # ACK immediately so Discord never shows "application didn't respond" while
+        # we fetch fresh role data or wait on the draw lock.
+        await interaction.response.defer(ephemeral=True)
+
+        member = await get_fresh_interaction_member(interaction)
+        if not member_is_eligible(member):
+            seen_roles = [
+                getattr(role, "name", "")
+                for role in (getattr(member, "roles", []) or [])
+                if getattr(role, "name", "") != "@everyone"
+            ]
+            seen_text = ", ".join(seen_roles) if seen_roles else "(no named roles found)"
+            await interaction.edit_original_message(
+                content=(
+                    f"You need {_eligible_role_text()} to spin for a number.\n"
+                    f"Discord currently shows me these roles for you: **{seen_text}**"
+                )
+            )
+            return
+
         uid = str(interaction.user.id)
         spin_event = None
 
         async with lock:
             if uid in state["assigned"]:
                 wheel_num = state.get("wheel_numbers", {}).get(uid, state["assigned"][uid])
-                await interaction.response.send_message(
-                    f"You already spun **#{wheel_num}**.", ephemeral=True
+                await interaction.edit_original_message(
+                    content=f"You already spun **#{wheel_num}**."
                 )
                 return
 
             if not state["available"]:
-                await interaction.response.send_message("All 32 numbers have been assigned.", ephemeral=True)
+                await interaction.edit_original_message(content="All 32 numbers have been assigned.")
                 return
 
             now = time.time()
             active_until = float(state.get("spin_active_until") or 0.0)
             if active_until > now:
                 wait_for = max(1, int(active_until - now + 0.999))
-                await interaction.response.send_message(
-                    f"🎡 The wheel is already spinning. Try again in about **{wait_for} second(s)**.",
-                    ephemeral=True,
+                await interaction.edit_original_message(
+                    content=f"🎡 The wheel is already spinning. Try again in about **{wait_for} second(s)**."
                 )
                 return
 
@@ -253,8 +257,13 @@ class NumberView(View):
             state["spin_active_until"] = time.time() + SPIN_DURATION_SECONDS + 0.35
             save_state(state)
 
+        # Finish the private deferred response, then make the public announcement.
+        await interaction.edit_original_message(
+            content="🎡 Your spin has started — watch the live WURD wheel!"
+        )
+
         watch_line = f"\n👀 Watch it live: <{WURD_WHEEL_URL}>" if WURD_WHEEL_URL else ""
-        await interaction.response.send_message(
+        await interaction.channel.send(
             f"🎡 **{interaction.user.display_name} is spinning the wheel!**{watch_line}",
             allowed_mentions=ALLOWED,
         )

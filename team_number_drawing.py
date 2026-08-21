@@ -2,7 +2,7 @@
 #
 # pip install nextcord
 # Run with: TOKEN=your_bot_token python team_number_drawing.py
-import os, json, random, asyncio, time
+import os, json, random, asyncio, time, re
 import nextcord
 from nextcord.ext import commands
 from nextcord.ui import View, Button

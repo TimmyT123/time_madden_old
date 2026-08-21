@@ -171,6 +171,23 @@ class NumberView(View):
             )
             return
 
+        # Reject stale buttons from an older drawing. Persistent Discord views can
+        # survive bot restarts, so the custom_id alone is not enough to prove this
+        # is the current official draw message.
+        ref = state.get("button_message") or {}
+        current_message_id = ref.get("message_id")
+        current_channel_id = ref.get("channel_id")
+        if (
+            not interaction.message
+            or interaction.message.id != current_message_id
+            or getattr(interaction.channel, "id", None) != current_channel_id
+        ):
+            await interaction.response.send_message(
+                "This is an old team-selection drawing button. Please use the current pinned draw post.",
+                ephemeral=True,
+            )
+            return
+
         uid = str(interaction.user.id)
         spin_event = None
 
@@ -579,9 +596,15 @@ def _phase_flags():
 @bot.command()
 @commands.has_permissions(manage_guild=True)
 async def startorder(ctx):
-    """Reset everything, post a fresh button, unpin old final-results, and pin the new start post."""
-    # Fresh state
+    """Reset everything, retire the previous button, post a fresh button, and pin it."""
     global state
+
+    # Retire the previously tracked draw button BEFORE replacing state. This keeps
+    # an old season/test button from looking active after a new drawing begins.
+    await disable_button_message()
+    await unpin_button_message()
+
+    # Fresh state
     state = fresh_state()
     save_state(state)
 

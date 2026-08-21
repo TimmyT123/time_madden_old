@@ -14,6 +14,9 @@ load_dotenv(".env.teamdraw")
 STATE_FILE = os.getenv("TEAM_ORDER_STATE_FILE", "team_order_state.json")
 WURD_WHEEL_URL = os.getenv("WURD_WHEEL_URL", "https://wurd-madden.com/team-wheel").strip()
 SPIN_DURATION_SECONDS = max(4.0, min(float(os.getenv("TEAM_WHEEL_SPIN_SECONDS", "7.0")), 12.0))
+# Keep the draw locked while the website holds the winning number on screen.
+# This should match RESULT_HOLD_MS in team_wheel.html (4000 ms by default).
+RESULT_HOLD_SECONDS = max(2.0, min(float(os.getenv("TEAM_WHEEL_RESULT_HOLD_SECONDS", "4.0")), 10.0))
 TOTAL_NUMBERS = 32                 # Always keep the full 1..32 wheel
 
 # Active WURD owners are members with either an AFC or NFC role.
@@ -253,7 +256,7 @@ class NumberView(View):
                 history = state.setdefault("spin_history", [])
                 history.append(dict(spin_event))
                 state["spin_history"] = history[-32:]
-                state["spin_active_until"] = time.time() + SPIN_DURATION_SECONDS + 0.35
+                state["spin_active_until"] = time.time() + SPIN_DURATION_SECONDS + RESULT_HOLD_SECONDS + 0.35
                 save_state(state)
 
             # At this point the result is official and the website can see it.
@@ -273,10 +276,10 @@ class NumberView(View):
             # Let the website animation finish before Discord reveals the result.
             await asyncio.sleep(SPIN_DURATION_SECONDS)
 
-            async with lock:
-                if (state.get("last_spin") or {}).get("seq") == spin_event["seq"]:
-                    state["spin_active_until"] = 0.0
-                    save_state(state)
+            # Do NOT clear spin_active_until yet.  The website deliberately keeps
+            # the winning number parked under the pointer for RESULT_HOLD_SECONDS.
+            # Leaving the timestamp in place prevents another owner from starting
+            # a new spin until that result display/reset window has finished.
 
             remaining = spin_event["remaining"]
             result_text = (

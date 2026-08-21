@@ -2,7 +2,7 @@
 #
 # pip install nextcord
 # Run with: TOKEN=your_bot_token python team_number_drawing.py
-import os, json, random, asyncio
+import os, json, random, asyncio, time
 import nextcord
 from nextcord.ext import commands
 from nextcord.ui import View, Button
@@ -11,9 +11,20 @@ from dotenv import load_dotenv
 load_dotenv(".env.teamdraw")
 
 # ==== CONFIG ====
-STATE_FILE = "team_order_state.json"
-TOTAL_NUMBERS = 32                 # set to your league size
-ROLE_LIMIT = None                  # e.g., "Madden League" or leave None for everyone
+STATE_FILE = os.getenv("TEAM_ORDER_STATE_FILE", "team_order_state.json")
+WURD_WHEEL_URL = os.getenv("WURD_WHEEL_URL", "https://wurd-madden.com/team-wheel").strip()
+SPIN_DURATION_SECONDS = max(4.0, min(float(os.getenv("TEAM_WHEEL_SPIN_SECONDS", "7.0")), 12.0))
+TOTAL_NUMBERS = 32                 # Always keep the full 1..32 wheel
+
+# Active WURD owners are members with either an AFC or NFC role.
+# Set this to () if you ever want every non-bot server member to be eligible.
+ELIGIBLE_ROLE_NAMES = ("AFC", "NFC")
+
+# Backward-compatible single-role option. Leave None when using ELIGIBLE_ROLE_NAMES.
+ROLE_LIMIT = None
+
+# Uses operating-system randomness instead of the default pseudo-random generator.
+SECURE_RANDOM = random.SystemRandom()
 
 NFL_TEAMS = [
     "ARI","ATL","BAL","BUF","CAR","CHI","CIN","CLE","DAL","DEN","DET","GB",
@@ -37,8 +48,8 @@ DRAW_PUBLIC = {
     "notpicked": "List eligible users who haven’t drawn a number yet.",
 }
 DRAW_ADMIN = {
-    "startorder": "Reset and post the 'Get My Number' button (pins it; unpins prior results).",
-    "closeorder": "Close the number draw, compact to 1..N, post mapping + final order, init draft order.",
+    "startorder": "Reset and post the live wheel buttons (pins them; unpins prior results).",
+    "closeorder": "Close the draw, compact spinners to 1..N, put non-spinners last, and init draft order.",
     "resetorder": "Fully reset state (run `!startorder` after).",
     "remindnotpicked": "Ping users who haven’t drawn a number yet.",
 }
@@ -73,20 +84,50 @@ lock = asyncio.Lock()
 ALLOWED = nextcord.AllowedMentions(everyone=False, users=False, roles=False, replied_user=False)
 
 # ==== STATE ====
+def fresh_state():
+    return {
+        "assigned": {},           # {user_id: current number}; raw wheel numbers while open, final pick numbers after close
+        "wheel_numbers": {},      # {user_id: original 1..32 wheel number}; preserved after compaction
+        "available": list(range(1, TOTAL_NUMBERS + 1)),
+        "closed": False,
+        "button_message": None,   # {"channel_id": int, "message_id": int}
+        "late_users": [],         # eligible owners who did not spin; appended to the end at close
+        "final_mapping": [],      # [[uid, old_wheel_number_or_None, final_pick_number], ...]
+        "spin_seq": 0,            # increments once per successful spin
+        "last_spin": None,        # latest live wheel event
+        "spin_history": [],       # public-friendly recent spin events for the WURD wheel page
+        "owner_names": {},        # {uid: {username, display_name}} for final order display
+        "spin_active_until": 0.0  # prevents overlapping wheel animations
+    }
+
 def load_state():
     if not os.path.exists(STATE_FILE):
-        return {
-            "assigned": {},                       # {user_id: number}
-            "available": list(range(1, TOTAL_NUMBERS + 1)),
-            "closed": False,
-            "button_message": None                # {"channel_id": int, "message_id": int}
-        }
+        return fresh_state()
+
     with open(STATE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        loaded = json.load(f)
+
+    # Backward-compatible defaults for state files created by older versions.
+    loaded.setdefault("assigned", {})
+    loaded.setdefault("available", list(range(1, TOTAL_NUMBERS + 1)))
+    loaded.setdefault("closed", False)
+    loaded.setdefault("button_message", None)
+    loaded.setdefault("wheel_numbers", dict(loaded["assigned"]) if not loaded["closed"] else {})
+    loaded.setdefault("late_users", [])
+    loaded.setdefault("final_mapping", [])
+    loaded.setdefault("spin_seq", 0)
+    loaded.setdefault("last_spin", None)
+    loaded.setdefault("spin_history", [])
+    loaded.setdefault("owner_names", {})
+    loaded.setdefault("spin_active_until", 0.0)
+    return loaded
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
+    """Atomically save state so the Discord bot / future website never reads a half-written JSON file."""
+    tmp_file = STATE_FILE + ".tmp"
+    with open(tmp_file, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
+    os.replace(tmp_file, STATE_FILE)
 
 state = load_state()
 
@@ -95,51 +136,116 @@ class NumberView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
+        # A link button cannot also run a Discord callback, so the pinned post
+        # has one button to WATCH the WURD wheel and one button to SPIN it.
+        if WURD_WHEEL_URL:
+            self.add_item(
+                Button(
+                    label="Open Live Wheel",
+                    style=nextcord.ButtonStyle.link,
+                    url=WURD_WHEEL_URL,
+                    emoji="🎡",
+                    row=0,
+                )
+            )
+
     @nextcord.ui.button(
-        label="Get My Number",
+        label="Spin My Number",
         style=nextcord.ButtonStyle.green,
-        custom_id="team_selection_get_number"  # required for persistence
+        custom_id="team_selection_get_number",
+        emoji="🎲",
+        row=0,
     )
     async def get_number(self, button: Button, interaction: nextcord.Interaction):
-        # Closed?
         if state.get("closed"):
             await interaction.response.send_message("The draw is closed.", ephemeral=True)
             return
-
-        # Optional role limit
-        if ROLE_LIMIT:
-            role = nextcord.utils.get(interaction.guild.roles, name=ROLE_LIMIT)
-            if not role or role not in interaction.user.roles:
-                await interaction.response.send_message(
-                    f"You need the **{ROLE_LIMIT}** role to draw a number.", ephemeral=True
-                )
-                return
 
         if interaction.user.bot:
             await interaction.response.send_message("Bots can’t draw numbers.", ephemeral=True)
             return
 
+        if not member_is_eligible(interaction.user):
+            await interaction.response.send_message(
+                f"You need {_eligible_role_text()} to spin for a number.", ephemeral=True
+            )
+            return
+
         uid = str(interaction.user.id)
+        spin_event = None
+
         async with lock:
             if uid in state["assigned"]:
+                wheel_num = state.get("wheel_numbers", {}).get(uid, state["assigned"][uid])
                 await interaction.response.send_message(
-                    f"You already have number **{state['assigned'][uid]}**.", ephemeral=True
+                    f"You already spun **#{wheel_num}**.", ephemeral=True
                 )
                 return
+
             if not state["available"]:
-                await interaction.response.send_message("All numbers have been assigned.", ephemeral=True)
+                await interaction.response.send_message("All 32 numbers have been assigned.", ephemeral=True)
                 return
 
-            number = random.choice(state["available"])
+            now = time.time()
+            active_until = float(state.get("spin_active_until") or 0.0)
+            if active_until > now:
+                wait_for = max(1, int(active_until - now + 0.999))
+                await interaction.response.send_message(
+                    f"🎡 The wheel is already spinning. Try again in about **{wait_for} second(s)**.",
+                    ephemeral=True,
+                )
+                return
+
+            pool = sorted(int(n) for n in state["available"])
+            number = SECURE_RANDOM.choice(pool)
             state["available"].remove(number)
             state["assigned"][uid] = number
+            state.setdefault("wheel_numbers", {})[uid] = number
+            state.setdefault("owner_names", {})[uid] = {
+                "username": interaction.user.name,
+                "display_name": interaction.user.display_name,
+            }
+
+            state["spin_seq"] = int(state.get("spin_seq", 0)) + 1
+            started_at_ms = int(time.time() * 1000)
+            duration_ms = int(SPIN_DURATION_SECONDS * 1000)
+            spin_event = {
+                "seq": state["spin_seq"],
+                "user_id": uid,
+                "username": interaction.user.name,
+                "display_name": interaction.user.display_name,
+                "number": number,
+                "remaining": len(state["available"]),
+                "started_at_ms": started_at_ms,
+                "duration_ms": duration_ms,
+                "pool": pool,
+            }
+            state["last_spin"] = spin_event
+            history = state.setdefault("spin_history", [])
+            history.append(dict(spin_event))
+            state["spin_history"] = history[-32:]
+            state["spin_active_until"] = time.time() + SPIN_DURATION_SECONDS + 0.35
             save_state(state)
 
-        # Public announcement for transparency
-        remaining = len(state["available"])
+        watch_line = f"\n👀 Watch it live: <{WURD_WHEEL_URL}>" if WURD_WHEEL_URL else ""
         await interaction.response.send_message(
-            f"{interaction.user.mention} got number **{number}**! "
-            f"({remaining} numbers remaining)"
+            f"🎡 **{interaction.user.display_name} is spinning the wheel!**{watch_line}",
+            allowed_mentions=ALLOWED,
+        )
+
+        # Let the website animation finish before Discord reveals the result.
+        await asyncio.sleep(SPIN_DURATION_SECONDS)
+
+        async with lock:
+            if state.get("last_spin", {}).get("seq") == spin_event["seq"]:
+                state["spin_active_until"] = 0.0
+                save_state(state)
+
+        remaining = spin_event["remaining"]
+        await interaction.channel.send(
+            f"🎉 **{interaction.user.display_name} landed on #{spin_event['number']}!** "
+            f"({remaining} numbers remaining)",
+            allowed_mentions=ALLOWED,
         )
 
 class ClosedView(View):
@@ -150,9 +256,20 @@ class ClosedView(View):
                 label="Drawing Closed",
                 style=nextcord.ButtonStyle.gray,
                 disabled=True,
-                custom_id="team_selection_closed"
+                custom_id="team_selection_closed",
+                row=0,
             )
         )
+        if WURD_WHEEL_URL:
+            self.add_item(
+                Button(
+                    label="View Wheel Results",
+                    style=nextcord.ButtonStyle.link,
+                    url=WURD_WHEEL_URL,
+                    emoji="🎡",
+                    row=0,
+                )
+            )
 
 @bot.event
 async def on_ready():
@@ -194,19 +311,47 @@ def format_mapping(guild, mapping, title="Old → New Mapping"):
             display = f"{member.name} ({member.mention})"
         else:
             display = f"UserID:{uid} (<@{uid}>)"
-        lines.append(f"• **#{new_num}** — {display} *(was #{old_num})*")
+
+        if old_num is None:
+            lines.append(f"• **#{new_num}** — {display} *(did not spin — placed at end)*")
+        else:
+            lines.append(f"• **#{new_num}** — {display} *(wheel #{old_num})*")
     return "\n".join(lines)
 
-def compact_numbers_with_mapping(guild):
-    # [(uid, old_num)] sorted by old_num
-    pairs = sorted(state["assigned"].items(), key=lambda kv: kv[1])
-    mapping = []  # [(uid, old_num, new_num)]
+def compact_numbers_with_mapping(guild, late_uids=None):
+    """
+    Compact actual wheel spins by their original 1..32 number.
+    Eligible users who never spun are appended after all spinners.
+    Their order is randomized within the late group for fairness.
+    """
+    late_uids = list(late_uids or [])
+
+    # Preserve original wheel numbers before overwriting state["assigned"].
+    raw_pairs = sorted(state["assigned"].items(), key=lambda kv: kv[1])
+    state.setdefault("wheel_numbers", {})
+    for uid, old_num in raw_pairs:
+        state["wheel_numbers"].setdefault(uid, old_num)
+
+    mapping = []  # [(uid, old_num_or_None, new_num)]
     new_assigned = {}
-    for new_num, (uid, old_num) in enumerate(pairs, start=1):
+
+    for new_num, (uid, old_num) in enumerate(raw_pairs, start=1):
         new_assigned[uid] = new_num
         mapping.append((uid, old_num, new_num))
+
+    next_num = len(new_assigned) + 1
+    for uid in late_uids:
+        # Ignore duplicates defensively.
+        if uid in new_assigned:
+            continue
+        new_assigned[uid] = next_num
+        mapping.append((uid, None, next_num))
+        next_num += 1
+
     state["assigned"] = new_assigned
-    state["available"] = []  # no longer needed after close
+    state["late_users"] = late_uids
+    state["final_mapping"] = [list(item) for item in mapping]
+    state["available"] = []  # wheel is no longer active after close
     save_state(state)
     return mapping
 
@@ -289,28 +434,39 @@ async def unpin_previous_results(channel):
             pass
 
 # ==== ELIGIBILITY HELPERS ====
+def member_is_eligible(member: nextcord.Member) -> bool:
+    """True when a human member is an active team owner for this drawing."""
+    if not member or member.bot:
+        return False
+
+    if ELIGIBLE_ROLE_NAMES:
+        member_role_names = {role.name for role in member.roles}
+        return any(role_name in member_role_names for role_name in ELIGIBLE_ROLE_NAMES)
+
+    if ROLE_LIMIT:
+        return any(role.name == ROLE_LIMIT for role in member.roles)
+
+    return True
+
+def _eligible_role_text() -> str:
+    if ELIGIBLE_ROLE_NAMES:
+        pretty = " or ".join(f"**{name}**" for name in ELIGIBLE_ROLE_NAMES)
+        return f"the {pretty} role"
+    if ROLE_LIMIT:
+        return f"the **{ROLE_LIMIT}** role"
+    return "an eligible league role"
+
 async def get_eligible_members(guild: nextcord.Guild):
     """
-    Return the list of human members eligible to pick:
-    - If ROLE_LIMIT is set, only members with that role
-    - Excludes bots
-    Tries fetch_members() (accurate) and falls back to guild.members (cache).
+    Return the current human members eligible to pick.
+    With the default WURD config, that means members with AFC or NFC.
     """
-    # Try API fetch for complete/accurate list
     try:
         members = [m async for m in guild.fetch_members(limit=None)]
     except Exception:
         members = list(guild.members)
 
-    # Optional role filtering
-    if ROLE_LIMIT:
-        role = nextcord.utils.get(guild.roles, name=ROLE_LIMIT)
-        if role:
-            members = [m for m in members if role in m.roles]
-
-    # Exclude bots
-    members = [m for m in members if not m.bot]
-    return members
+    return [m for m in members if member_is_eligible(m)]
 
 def _norm_team(s):
     if not s:
@@ -426,12 +582,7 @@ async def startorder(ctx):
     """Reset everything, post a fresh button, unpin old final-results, and pin the new start post."""
     # Fresh state
     global state
-    state = {
-        "assigned": {},
-        "available": list(range(1, TOTAL_NUMBERS + 1)),
-        "closed": False,
-        "button_message": None
-    }
+    state = fresh_state()
     save_state(state)
 
     # Housekeeping: unpin any previous final-results pins
@@ -439,8 +590,15 @@ async def startorder(ctx):
 
     # Post the new button
     view = NumberView()
-    sent = await ctx.send("Click the button to get your **Team Selection Number**:\n"
-                          "Numbers are randomly pulled from the remaining pool (no duplicates, no rerolls).", view=view, allowed_mentions=ALLOWED)
+    sent = await ctx.send(
+        "🎡 **Madden 27 Official Team Selection Number Draw**\n"
+        "1. Open the **Live Wheel** so you can watch it spin.\n"
+        "2. Click **Spin My Number** when you are ready.\n\n"
+        "The wheel starts with **32 numbers**. Every result is randomly selected from the remaining pool "
+        "(no duplicates, no rerolls). Owners who do not spin before the draw closes are placed at the end.",
+        view=view,
+        allowed_mentions=ALLOWED,
+    )
     state["button_message"] = {"channel_id": ctx.channel.id, "message_id": sent.id}
     save_state(state)
 
@@ -499,7 +657,7 @@ async def status(ctx):
 async def notpicked(ctx):
     """
     List users (eligible) who have not drawn a number yet.
-    Respects ROLE_LIMIT if set. Does not ping users.
+    Uses the active-owner role filter. Does not ping users.
     """
     try:
         assigned = state.get("assigned", {})
@@ -555,7 +713,7 @@ async def remindnotpicked(ctx):
         # Build a ping line (this will ping due to explicit AllowedMentions here)
         mentions_line = " ".join(m.mention for m in pending)
         await ctx.send(
-            f"{mentions_line}\nPlease click the button to draw your **Team Selection Number**.",
+            f"{mentions_line}\nPlease click **Spin My Number** to draw your **Team Selection Number**.",
             allowed_mentions=nextcord.AllowedMentions(everyone=False, users=True, roles=False, replied_user=False)
         )
     except Exception as e:
@@ -581,9 +739,16 @@ def _send_chunks_factory(max_len=1900):
 @bot.command()
 @commands.has_permissions(manage_guild=True)
 async def closeorder(ctx):
+    # Determine the CURRENT active-owner list before closing.
+    # Owners who are still AFC/NFC but never spun will be sent to the back.
+    eligible_members = await get_eligible_members(ctx.guild)
+
     async with lock:
         if state.get("closed"):
             await ctx.send("Order is already closed.", allowed_mentions=ALLOWED)
+            return
+        if float(state.get("spin_active_until") or 0.0) > time.time():
+            await ctx.send("The wheel is still spinning. Close the draw after the current spin finishes.", allowed_mentions=ALLOWED)
             return
         if not state.get("assigned"):  # guard against empty
             await ctx.send(
@@ -592,10 +757,24 @@ async def closeorder(ctx):
             )
             return
 
-        state["closed"] = True
-        mapping = compact_numbers_with_mapping(ctx.guild)
+        owner_names = state.setdefault("owner_names", {})
+        for m in eligible_members:
+            owner_names[str(m.id)] = {
+                "username": m.name,
+                "display_name": m.display_name,
+            }
 
-        # init draft order
+        assigned_uids = set(state.get("assigned", {}).keys())
+        late_uids = [str(m.id) for m in eligible_members if str(m.id) not in assigned_uids]
+
+        # Non-spinners are all behind the spinners, but randomize their order
+        # so there is no commissioner-controlled ordering within that last group.
+        SECURE_RANDOM.shuffle(late_uids)
+
+        state["closed"] = True
+        mapping = compact_numbers_with_mapping(ctx.guild, late_uids=late_uids)
+
+        # init draft order (now includes non-spinners at the end)
         pairs = sorted(state["assigned"].items(), key=lambda kv: kv[1])
         state["draft"] = {
             "open": False,
@@ -615,13 +794,21 @@ async def closeorder(ctx):
 
     await disable_button_message()
 
-    old_new = format_mapping(ctx.guild, mapping, title="Old → New Mapping")
+    old_new = format_mapping(ctx.guild, mapping, title="Wheel → Final Pick Mapping")
     final_order = format_order(ctx.guild, title="Final Team Selection Order (Compacted)")
 
     # NEW: send in chunks to avoid 2,000-char limit
     send_chunks = _send_chunks_factory()
     await send_chunks(ctx, old_new)
     await send_chunks(ctx, final_order)
+
+    late_uids = state.get("late_users", [])
+    if late_uids:
+        await ctx.send(
+            f"⏰ **{len(late_uids)} owner(s) did not spin.** "
+            "They were placed after everyone who spun; their order within the late group was randomized.",
+            allowed_mentions=ALLOWED
+        )
 
     await unpin_button_message()
     # Optionally pin only the final order header chunk: re-send a short header to pin
@@ -637,8 +824,16 @@ async def closeorder(ctx):
 @bot.command()
 @commands.has_permissions(manage_guild=True)
 async def showfinal(ctx):
-    mapping = compact_numbers_with_mapping(ctx.guild)
-    old_new = format_mapping(ctx.guild, mapping, title="Old → New Mapping")
+    if not state.get("closed"):
+        await ctx.send("The number draw is still open. Use `!closeorder` first.", allowed_mentions=ALLOWED)
+        return
+
+    mapping = state.get("final_mapping") or []
+    if not mapping:
+        await ctx.send("No saved final mapping was found.", allowed_mentions=ALLOWED)
+        return
+
+    old_new = format_mapping(ctx.guild, mapping, title="Wheel → Final Pick Mapping")
     final_order = format_order(ctx.guild, title="Final Team Selection Order (Compacted)")
 
     send_chunks = _send_chunks_factory()
@@ -650,12 +845,7 @@ async def showfinal(ctx):
 async def resetorder(ctx):
     """Reset everything."""
     global state
-    state = {
-        "assigned": {},
-        "available": list(range(1, TOTAL_NUMBERS + 1)),
-        "closed": False,
-        "button_message": None
-    }
+    state = fresh_state()
     save_state(state)
     await ctx.send("Order has been reset. Use `!startorder` to begin again.")
 
@@ -1054,9 +1244,11 @@ async def help_cmd(ctx):
                 lines.append(f"• **!{n}** — {DRAW_ADMIN[n]}")
         lines.append("")
         notes = []
-        if ROLE_LIMIT:
+        if ELIGIBLE_ROLE_NAMES:
+            notes.append("Only active owners with an **AFC** or **NFC** role can draw a number.")
+        elif ROLE_LIMIT:
             notes.append(f"Only members with the **{ROLE_LIMIT}** role can draw a number.")
-        notes.append("Use the **Get My Number** button to draw your number.")
+        notes.append("Open the live WURD wheel, then use **Spin My Number** to draw your number.")
         lines.extend(f"• {n}" for n in notes)
     else:
         # Between phases (draw closed; draft not started)

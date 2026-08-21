@@ -1457,7 +1457,8 @@ async def pickfromlist(ctx):
                 member = ctx.guild.get_member(int(uid))
                 who = member.mention if member else f"<@{uid}>"
                 if not prefs:
-                    msg_primary = f"📋 {who} has **no saved team preference list**. They remain on the clock."
+                    # Keep preference details private in public draft chat.
+                    msg_primary = f"⚠️ I couldn't make an automatic pick for {who}. They remain on the clock."
                 else:
                     chosen = rank = None
                     for i, code in enumerate(prefs, start=1):
@@ -1465,7 +1466,8 @@ async def pickfromlist(ctx):
                             chosen, rank = code, i
                             break
                     if not chosen:
-                        msg_primary = f"📋 None of {who}'s **{len(prefs)} saved preferences** are still available. They remain on the clock."
+                        # Do not reveal how many teams the owner ranked or which ones were unavailable.
+                        msg_primary = f"⚠️ I couldn't make an automatic pick for {who}. They remain on the clock."
                     else:
                         d["available"].remove(chosen)
                         d["picks"][uid] = chosen
@@ -1475,7 +1477,9 @@ async def pickfromlist(ctx):
                         })
                         save_state(state)
                         team_name = TEAM_FULL_NAMES.get(chosen, chosen)
-                        msg_primary = f"📋 {who} gets **{team_name} ({chosen})** from their saved preference list (**choice #{rank}**, highest one still available)."
+                        # Public result intentionally does not reveal that a preference list was used
+                        # or where this team ranked on the owner's private list.
+                        msg_primary = f"{who} picked **{team_name} ({chosen})**."
                         _advance_picker()
                         next_uid = _current_uid()
                         if next_uid is None:
@@ -1679,9 +1683,7 @@ async def help_cmd(ctx):
                 lines.append(f"• **!{n}** — {DRAW_ADMIN[n]}")
         lines.append("")
         notes = []
-        if ELIGIBLE_ROLE_NAMES:
-            notes.append("Only active owners with an **AFC** or **NFC** role can draw a number.")
-        elif ROLE_LIMIT:
+        if ROLE_LIMIT and not ELIGIBLE_ROLE_NAMES:
             notes.append(f"Only members with the **{ROLE_LIMIT}** role can draw a number.")
         notes.append("Open the live WURD wheel, then use **Spin My Number** to draw your number.")
         lines.extend(f"• {n}" for n in notes)

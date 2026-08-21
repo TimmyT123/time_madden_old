@@ -157,8 +157,13 @@ class NumberView(View):
         row=0,
     )
     async def get_number(self, button: Button, interaction: nextcord.Interaction):
-        # Fast local checks first. Discord component interactions must be acknowledged
-        # within a few seconds, so do not perform network calls before we respond/defer.
+        """Handle one official wheel spin.
+
+        Keep the component callback fast and deterministic: acknowledge Discord
+        immediately, trust access to the official team-selection post, choose the
+        official result locally, persist it, then let the website animate it.
+        """
+        # Fast local checks before acknowledging.
         if state.get("closed"):
             await interaction.response.send_message("The draw is closed.", ephemeral=True)
             return
@@ -167,7 +172,7 @@ class NumberView(View):
             await interaction.response.send_message("Bots can’t draw numbers.", ephemeral=True)
             return
 
-        # Reject stale buttons from an older drawing before doing any API work.
+        # Reject stale buttons from an older drawing.
         ref = state.get("button_message") or {}
         current_message_id = ref.get("message_id")
         current_channel_id = ref.get("channel_id")
@@ -182,106 +187,135 @@ class NumberView(View):
             )
             return
 
-        # ACK immediately so Discord never shows "application didn't respond" while
-        # we fetch fresh role data or wait on the draw lock.
-        await interaction.response.defer(ephemeral=True)
-
-        member = await get_fresh_interaction_member(interaction)
-        if not member_is_eligible(member):
-            seen_roles = [
-                getattr(role, "name", "")
-                for role in (getattr(member, "roles", []) or [])
-                if getattr(role, "name", "") != "@everyone"
-            ]
-            seen_text = ", ".join(seen_roles) if seen_roles else "(no named roles found)"
-            await interaction.edit_original_message(
-                content=(
-                    f"You need {_eligible_role_text()} to spin for a number.\n"
-                    f"Discord currently shows me these roles for you: **{seen_text}**"
-                )
-            )
-            return
+        # ACK with a real ephemeral message immediately.  Do not call Discord's
+        # member API here; everyone who can use the official team-selection post
+        # is already controlled by the channel/league setup, and the extra fetch
+        # was able to stall a component interaction on the Pi.
+        await interaction.response.send_message(
+            "🎡 Starting your spin… watch the live WURD wheel!",
+            ephemeral=True,
+        )
 
         uid = str(interaction.user.id)
+        member = interaction.user
+        if interaction.guild:
+            member = interaction.guild.get_member(interaction.user.id) or interaction.user
+
         spin_event = None
 
-        async with lock:
-            if uid in state["assigned"]:
-                wheel_num = state.get("wheel_numbers", {}).get(uid, state["assigned"][uid])
-                await interaction.edit_original_message(
-                    content=f"You already spun **#{wheel_num}**."
-                )
-                return
+        try:
+            async with lock:
+                if uid in state["assigned"]:
+                    wheel_num = state.get("wheel_numbers", {}).get(uid, state["assigned"][uid])
+                    await interaction.edit_original_message(
+                        content=f"You already spun **#{wheel_num}**."
+                    )
+                    return
 
-            if not state["available"]:
-                await interaction.edit_original_message(content="All 32 numbers have been assigned.")
-                return
+                if not state["available"]:
+                    await interaction.edit_original_message(content="All 32 numbers have been assigned.")
+                    return
 
-            now = time.time()
-            active_until = float(state.get("spin_active_until") or 0.0)
-            if active_until > now:
-                wait_for = max(1, int(active_until - now + 0.999))
-                await interaction.edit_original_message(
-                    content=f"🎡 The wheel is already spinning. Try again in about **{wait_for} second(s)**."
-                )
-                return
+                now = time.time()
+                active_until = float(state.get("spin_active_until") or 0.0)
+                if active_until > now:
+                    wait_for = max(1, int(active_until - now + 0.999))
+                    await interaction.edit_original_message(
+                        content=f"🎡 The wheel is already spinning. Try again in about **{wait_for} second(s)**."
+                    )
+                    return
 
-            pool = sorted(int(n) for n in state["available"])
-            number = SECURE_RANDOM.choice(pool)
-            state["available"].remove(number)
-            state["assigned"][uid] = number
-            state.setdefault("wheel_numbers", {})[uid] = number
-            state.setdefault("owner_names", {})[uid] = {
-                "username": member.name,
-                "display_name": member.display_name,
-            }
+                pool = sorted(int(n) for n in state["available"])
+                number = SECURE_RANDOM.choice(pool)
+                state["available"].remove(number)
+                state["assigned"][uid] = number
+                state.setdefault("wheel_numbers", {})[uid] = number
+                state.setdefault("owner_names", {})[uid] = {
+                    "username": getattr(member, "name", interaction.user.name),
+                    "display_name": getattr(member, "display_name", interaction.user.display_name),
+                }
 
-            state["spin_seq"] = int(state.get("spin_seq", 0)) + 1
-            started_at_ms = int(time.time() * 1000)
-            duration_ms = int(SPIN_DURATION_SECONDS * 1000)
-            spin_event = {
-                "seq": state["spin_seq"],
-                "user_id": uid,
-                "username": member.name,
-                "display_name": member.display_name,
-                "number": number,
-                "remaining": len(state["available"]),
-                "started_at_ms": started_at_ms,
-                "duration_ms": duration_ms,
-                "pool": pool,
-            }
-            state["last_spin"] = spin_event
-            history = state.setdefault("spin_history", [])
-            history.append(dict(spin_event))
-            state["spin_history"] = history[-32:]
-            state["spin_active_until"] = time.time() + SPIN_DURATION_SECONDS + 0.35
-            save_state(state)
-
-        # Finish the private deferred response, then make the public announcement.
-        await interaction.edit_original_message(
-            content="🎡 Your spin has started — watch the live WURD wheel!"
-        )
-
-        watch_line = f"\n👀 Watch it live: <{WURD_WHEEL_URL}>" if WURD_WHEEL_URL else ""
-        await interaction.channel.send(
-            f"🎡 **{interaction.user.display_name} is spinning the wheel!**{watch_line}",
-            allowed_mentions=ALLOWED,
-        )
-
-        # Let the website animation finish before Discord reveals the result.
-        await asyncio.sleep(SPIN_DURATION_SECONDS)
-
-        async with lock:
-            if state.get("last_spin", {}).get("seq") == spin_event["seq"]:
-                state["spin_active_until"] = 0.0
+                state["spin_seq"] = int(state.get("spin_seq", 0)) + 1
+                started_at_ms = int(time.time() * 1000)
+                duration_ms = int(SPIN_DURATION_SECONDS * 1000)
+                spin_event = {
+                    "seq": state["spin_seq"],
+                    "user_id": uid,
+                    "username": getattr(member, "name", interaction.user.name),
+                    "display_name": getattr(member, "display_name", interaction.user.display_name),
+                    "number": number,
+                    "remaining": len(state["available"]),
+                    "started_at_ms": started_at_ms,
+                    "duration_ms": duration_ms,
+                    "pool": pool,
+                }
+                state["last_spin"] = spin_event
+                history = state.setdefault("spin_history", [])
+                history.append(dict(spin_event))
+                state["spin_history"] = history[-32:]
+                state["spin_active_until"] = time.time() + SPIN_DURATION_SECONDS + 0.35
                 save_state(state)
 
-        remaining = spin_event["remaining"]
-        await interaction.channel.send(
-            f"🎉 **{interaction.user.display_name} landed on #{spin_event['number']}!** "
-            f"({remaining} numbers remaining)",
-            allowed_mentions=ALLOWED,
-        )
+            # At this point the result is official and the website can see it.
+            await interaction.edit_original_message(
+                content="🎡 Your spin is underway — watch the live WURD wheel!"
+            )
+
+            watch_line = f"\n👀 Watch it live: <{WURD_WHEEL_URL}>" if WURD_WHEEL_URL else ""
+            try:
+                await interaction.channel.send(
+                    f"🎡 **{interaction.user.display_name} is spinning the wheel!**{watch_line}",
+                    allowed_mentions=ALLOWED,
+                )
+            except Exception as e:
+                print(f"⚠️ Could not post spin-start announcement: {e}", flush=True)
+
+            # Let the website animation finish before Discord reveals the result.
+            await asyncio.sleep(SPIN_DURATION_SECONDS)
+
+            async with lock:
+                if (state.get("last_spin") or {}).get("seq") == spin_event["seq"]:
+                    state["spin_active_until"] = 0.0
+                    save_state(state)
+
+            remaining = spin_event["remaining"]
+            result_text = (
+                f"🎉 **{interaction.user.display_name} landed on #{spin_event['number']}!** "
+                f"({remaining} numbers remaining)"
+            )
+            try:
+                await interaction.channel.send(result_text, allowed_mentions=ALLOWED)
+            except Exception as e:
+                print(f"⚠️ Could not post spin result: {e}", flush=True)
+                await interaction.edit_original_message(
+                    content=f"{result_text} (Public Discord announcement failed, but this result is saved.)"
+                )
+
+        except Exception as e:
+            # Make failures visible both in Discord and systemd journal.
+            import traceback
+            print(
+                f"❌ Team draw spin failed for user {uid}: {type(e).__name__}: {e}",
+                flush=True,
+            )
+            traceback.print_exc()
+            try:
+                if spin_event is None:
+                    await interaction.edit_original_message(
+                        content=(
+                            "❌ The spin could not start and **no number was assigned**. "
+                            f"Error: `{type(e).__name__}: {e}`"
+                        )
+                    )
+                else:
+                    await interaction.edit_original_message(
+                        content=(
+                            f"⚠️ Your official number is **#{spin_event['number']}**, but a display/announcement step failed. "
+                            f"Error: `{type(e).__name__}: {e}`"
+                        )
+                    )
+            except Exception:
+                pass
 
 class ClosedView(View):
     def __init__(self):
@@ -730,6 +764,14 @@ async def status(ctx):
 
     except Exception as e:
         await ctx.send(f"Could not fetch status: `{e}`", allowed_mentions=ALLOWED)
+
+@bot.command(name="mydrawroles")
+async def mydrawroles(ctx):
+    """Diagnostic: show the role names the bot currently sees for you."""
+    member = ctx.guild.get_member(ctx.author.id) if ctx.guild else ctx.author
+    roles = [r.name for r in (getattr(member, "roles", []) or []) if r.name != "@everyone"]
+    text = ", ".join(roles) if roles else "(no named roles found)"
+    await ctx.send(f"**Roles I see for {ctx.author.name}:** {text}", allowed_mentions=ALLOWED)
 
 @bot.command(name="notpicked")
 async def notpicked(ctx):

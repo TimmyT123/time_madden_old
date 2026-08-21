@@ -165,9 +165,18 @@ class NumberView(View):
             await interaction.response.send_message("Bots can’t draw numbers.", ephemeral=True)
             return
 
-        if not member_is_eligible(interaction.user):
+        member = await get_fresh_interaction_member(interaction)
+        if not member_is_eligible(member):
+            seen_roles = [
+                getattr(role, "name", "")
+                for role in (getattr(member, "roles", []) or [])
+                if getattr(role, "name", "") != "@everyone"
+            ]
+            seen_text = ", ".join(seen_roles) if seen_roles else "(no named roles found)"
             await interaction.response.send_message(
-                f"You need {_eligible_role_text()} to spin for a number.", ephemeral=True
+                f"You need {_eligible_role_text()} to spin for a number.\n"
+                f"Discord currently shows me these roles for you: **{seen_text}**",
+                ephemeral=True,
             )
             return
 
@@ -219,8 +228,8 @@ class NumberView(View):
             state["assigned"][uid] = number
             state.setdefault("wheel_numbers", {})[uid] = number
             state.setdefault("owner_names", {})[uid] = {
-                "username": interaction.user.name,
-                "display_name": interaction.user.display_name,
+                "username": member.name,
+                "display_name": member.display_name,
             }
 
             state["spin_seq"] = int(state.get("spin_seq", 0)) + 1
@@ -229,8 +238,8 @@ class NumberView(View):
             spin_event = {
                 "seq": state["spin_seq"],
                 "user_id": uid,
-                "username": interaction.user.name,
-                "display_name": interaction.user.display_name,
+                "username": member.name,
+                "display_name": member.display_name,
                 "number": number,
                 "remaining": len(state["available"]),
                 "started_at_ms": started_at_ms,
@@ -451,19 +460,56 @@ async def unpin_previous_results(channel):
             pass
 
 # ==== ELIGIBILITY HELPERS ====
+def _role_tokens(role_name: str) -> set[str]:
+    """Normalize a Discord role name into uppercase word tokens.
+
+    Examples:
+      "NFC" -> {"NFC"}
+      "🏈 NFC Owners" -> {"NFC", "OWNERS"}
+      "AFC-Team" -> {"AFC", "TEAM"}
+    """
+    return set(re.findall(r"[A-Z0-9]+", (role_name or "").upper()))
+
 def member_is_eligible(member: nextcord.Member) -> bool:
     """True when a human member is an active team owner for this drawing."""
     if not member or member.bot:
         return False
 
+    roles = list(getattr(member, "roles", []) or [])
+
     if ELIGIBLE_ROLE_NAMES:
-        member_role_names = {role.name for role in member.roles}
-        return any(role_name in member_role_names for role_name in ELIGIBLE_ROLE_NAMES)
+        wanted = {name.upper() for name in ELIGIBLE_ROLE_NAMES}
+        for role in roles:
+            if wanted & _role_tokens(getattr(role, "name", "")):
+                return True
+        return False
 
     if ROLE_LIMIT:
-        return any(role.name == ROLE_LIMIT for role in member.roles)
+        target = ROLE_LIMIT.strip().casefold()
+        return any((getattr(role, "name", "") or "").strip().casefold() == target for role in roles)
 
     return True
+
+async def get_fresh_interaction_member(interaction: nextcord.Interaction):
+    """Return a guild Member with fresh role data for a button interaction.
+
+    Discord component interactions can occasionally hand the bot a member object
+    whose cached role list is stale.  Prefer the guild cache, then fetch the member
+    directly from Discord before deciding that an owner is ineligible.
+    """
+    if not interaction.guild:
+        return interaction.user
+
+    member = interaction.guild.get_member(interaction.user.id)
+
+    # Fetch directly as a final authority. This is only done when someone clicks
+    # the draw button, so the extra API request is tiny and makes role checks robust.
+    try:
+        member = await interaction.guild.fetch_member(interaction.user.id)
+    except Exception:
+        pass
+
+    return member or interaction.user
 
 def _eligible_role_text() -> str:
     if ELIGIBLE_ROLE_NAMES:

@@ -94,6 +94,7 @@ PREFERENCE_PUBLIC = {
     "notchoices": "List active owners who have not submitted any team preferences yet (no pings).",
 }
 PREFERENCE_ADMIN = {
+    "haschoices": "List active owners who have submitted a team preference list (no rankings).",
     "remindchoices": "Ping active owners who have not submitted a preference list yet.",
     "resetchoices": "Clear every saved team preference list without resetting the number draw.",
 }
@@ -1064,6 +1065,29 @@ async def notchoices(ctx):
         await ctx.send("\n".join(lines), allowed_mentions=ALLOWED)
     except Exception as e:
         await ctx.send(f"Could not compute preference status: `{e}`", allowed_mentions=ALLOWED)
+
+@bot.command(name="haschoices")
+@commands.has_permissions(manage_guild=True)
+async def haschoices(ctx):
+    """Admin: list active owners who have a saved preference list; never reveal rankings."""
+    try:
+        eligible = await get_eligible_members(ctx.guild)
+        prefs = state.get("team_preferences") or {}
+        submitted_members = [m for m in eligible if prefs.get(str(m.id))]
+        submitted_members.sort(key=lambda m: m.display_name.lower())
+
+        if not submitted_members:
+            await ctx.send(
+                "**Owners with Team Preferences (0):**\n• (none yet)",
+                allowed_mentions=ALLOWED,
+            )
+            return
+
+        lines = [f"**Owners with Team Preferences ({len(submitted_members)}/{len(eligible)}):**"]
+        lines.extend(f"• {m.display_name}" for m in submitted_members)
+        await ctx.send("\n".join(lines), allowed_mentions=ALLOWED)
+    except Exception as e:
+        await ctx.send(f"Could not compute submitted preference status: `{e}`", allowed_mentions=ALLOWED)
 
 @bot.command(name="remindchoices")
 @commands.has_permissions(manage_guild=True)

@@ -216,11 +216,12 @@ def save_quiz_history(book_id: str, page_from: int, page_to: int, results: list)
 
 # === Typing GUI ===
 class TypingEPUBReader:
-    def __init__(self, root, text, speed_delay_ms, start_index=0):
+    def __init__(self, root, text, speed_delay_ms, start_index=0, auto_quiz=True):
         self.root = root
         self.text = text
         self.index = start_index
         self.speed_delay = speed_delay_ms
+        self.auto_quiz = auto_quiz
         self.display_text = ""
         self.paused = False
         self.last_screen_text = ""  # text from the previous full screen
@@ -291,13 +292,17 @@ class TypingEPUBReader:
             self.display_text += letter
             self.index += 1
 
-            # if we've filled a screen, quiz on it and then clear
+            # If we've filled a screen, optionally quiz, then clear and continue.
+            # In Continuous Mode, no quiz dialogs are shown automatically.
             if len(self.display_text) // CHARS_PER_LINE >= MAX_LINES:
                 chunk = self.display_text
                 page_from = index_to_page(self.screen_start_index)
                 page_to = index_to_page(self.index)
-                self._run_quiz(chunk, page_from, page_to)
-                # prepare next screen
+
+                if self.auto_quiz:
+                    self._run_quiz(chunk, page_from, page_to)
+
+                # Prepare the next screen and keep running.
                 self.display_text = ""
                 self.screen_start_index = self.index
 
@@ -305,9 +310,13 @@ class TypingEPUBReader:
             self.root.after(self.speed_delay, self.show_next_letter)
         else:
             self.display_label.config(text=self.display_text + "\n\n[End of book reached]")
-            # Final end-of-book quiz on remaining text
-            if self.display_text.strip():
-                self._run_quiz(self.display_text, index_to_page(self.screen_start_index), index_to_page(self.index))
+            # Final end-of-book quiz only when automatic quizzes are enabled.
+            if self.auto_quiz and self.display_text.strip():
+                self._run_quiz(
+                    self.display_text,
+                    index_to_page(self.screen_start_index),
+                    index_to_page(self.index)
+                )
 
     def on_quit(self):
         save_current_index(self.index)
@@ -356,6 +365,20 @@ if __name__ == "__main__":
 
     mode_name = f"{delay} ms"
 
+    # Choose whether quizzes should appear automatically.
+    # No = Continuous Mode: the reader keeps running without quiz popups.
+    # You can still press Q at any time for a manual quiz.
+    auto_quiz = messagebox.askyesno(
+        title="Quiz Mode",
+        message=(
+            "Automatically show quiz questions after each screen?\n\n"
+            "Yes = Quiz Mode\n"
+            "No = Continuous Mode (keep reading with no automatic questions)\n\n"
+            "You can still press Q anytime for a manual quiz."
+        ),
+        parent=dialog_root
+    )
+
     # Load text and compute pages
     text = extract_text_from_epub(EPUB_PATH)
     saved_idx = load_saved_index()
@@ -377,7 +400,14 @@ if __name__ == "__main__":
     dialog_root.destroy()
 
     root = tk.Tk()
-    root.title(f"EPUB Reader - {mode_name} Mode")
+    reading_mode = "Quiz Mode" if auto_quiz else "Continuous Mode"
+    root.title(f"EPUB Reader - {mode_name} - {reading_mode}")
     root.geometry("1500x700")
-    app = TypingEPUBReader(root, text, delay, start_index=start_index)
+    app = TypingEPUBReader(
+        root,
+        text,
+        delay,
+        start_index=start_index,
+        auto_quiz=auto_quiz
+    )
     root.mainloop()

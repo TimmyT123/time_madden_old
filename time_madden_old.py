@@ -976,6 +976,39 @@ bot = commands.Bot(
 )
 
 
+# ===============================
+# PUBLIC HELP COMMAND
+# ===============================
+@bot.command(name="help")
+async def help_command(ctx):
+    help_text = """🏈 **WURD Bot Commands**
+
+**!available_teams**
+Shows the teams that are currently available.
+
+**!playtime <your availability>**
+Saves your normal Madden availability and updates your matchup forum(s).
+Example: `!playtime Weeknights after 7 PM, weekends open`
+
+**time**
+Type `time` by itself (no `!`) to receive the current PT, AZ, MT, CT, and ET times by DM.
+"""
+
+    try:
+        # Keep the full command list out of public channels.
+        await ctx.author.send(help_text)
+
+        if ctx.guild:
+            await ctx.reply(
+                "📬 I sent the WURD command list to your DMs.",
+                mention_author=False
+            )
+
+    except Exception:
+        # If the user's DMs are closed, show the help where they asked for it.
+        await ctx.send(help_text, allowed_mentions=AllowedMentions.none())
+
+
 # Link finder + nickname/team parsing (helpers)
 LINK_RE = re.compile(
     r"(https?://(?:www\.)?twitch\.tv/[A-Za-z0-9_]{4,25}"
@@ -2509,29 +2542,25 @@ async def get_available_teams_output():
     if not missing_teams:
         return "No available teams. All teams are taken!"
 
-    # Group missing teams by division
+    # Group ALL available teams by division.
     division_groups = {}
     for team in missing_teams:
         division = nfl_teams[team]
         division_groups.setdefault(division, []).append(team)
 
-    # Identify divisions with the most available teams
-    max_missing = max(len(teams) for teams in division_groups.values())
-    top_divisions = {
-        division: teams for division, teams in division_groups.items()
-        if len(teams) == max_missing
-    }
+    # Show every division that has at least one available team.
+    output_lines = [
+        f"🏈 **Available Teams ({len(missing_teams)})**",
+        ""
+    ]
 
-    # Format the output
-    output_lines = []
-    output_lines.append("\nAvailable teams are:\n")
-    for division in sorted(top_divisions.keys()):
-        output_lines.append(division)
-        for team in sorted(top_divisions[division]):
+    for division in sorted(division_groups.keys()):
+        output_lines.append(f"**{division}**")
+        for team in sorted(division_groups[division]):
             output_lines.append(f"- {team}")
-        output_lines.append("")  # Blank line between divisions
+        output_lines.append("")
 
-    return "\n".join(output_lines)
+    return "\n".join(output_lines).rstrip()
 
 
 @bot.command(name='available_teams')
@@ -4253,7 +4282,3 @@ async def on_message(msg):
 if __name__ == "__main__":
     logger.info("Starting Discord bot...")
     bot.run(token)
-
-
-
-

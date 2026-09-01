@@ -19,6 +19,15 @@ SPIN_DURATION_SECONDS = max(4.0, min(float(os.getenv("TEAM_WHEEL_SPIN_SECONDS", 
 RESULT_HOLD_SECONDS = max(2.0, min(float(os.getenv("TEAM_WHEEL_RESULT_HOLD_SECONDS", "4.0")), 10.0))
 TOTAL_NUMBERS = 32                 # Always keep the full 1..32 wheel
 
+# Only accept this bot's text commands in the team-selection channel.
+# If TEAM_SELECTION_CHANNEL_ID is set in .env.teamdraw, the exact channel ID wins.
+# Otherwise the bot falls back to the channel name below.
+TEAM_SELECTION_CHANNEL_ID = int(os.getenv("TEAM_SELECTION_CHANNEL_ID", "0") or 0)
+TEAM_SELECTION_CHANNEL_NAME = os.getenv(
+    "TEAM_SELECTION_CHANNEL_NAME",
+    "team-selection"
+).strip().lower()
+
 # Active WURD owners are members with either an AFC or NFC role.
 # Set this to () if you ever want every non-bot server member to be eligible.
 ELIGIBLE_ROLE_NAMES = ("AFC", "NFC")
@@ -484,6 +493,40 @@ async def on_ready():
     await restore_button_message()
 
     print(f"✅ Logged in as {bot.user}")
+
+
+def _is_team_selection_channel(channel) -> bool:
+    """True only for the Discord channel where team-selection commands belong."""
+    if channel is None:
+        return False
+
+    channel_id = int(getattr(channel, "id", 0) or 0)
+    if TEAM_SELECTION_CHANNEL_ID:
+        return channel_id == TEAM_SELECTION_CHANNEL_ID
+
+    channel_name = str(getattr(channel, "name", "") or "").strip().lower()
+    return channel_name == TEAM_SELECTION_CHANNEL_NAME
+
+
+@bot.event
+async def on_message(message):
+    """
+    Keep this bot's !commands confined to #team-selection.
+
+    This deliberately does not affect button/modal interactions, so the wheel and
+    private preference UI continue to work from their official posted messages.
+    """
+    if message.author.bot:
+        return
+
+    # This bot's text commands are server/channel tools, not DM commands.
+    if message.guild is None:
+        return
+
+    if not _is_team_selection_channel(message.channel):
+        return
+
+    await bot.process_commands(message)
 
 
 # ==== HELPERS ====

@@ -984,7 +984,7 @@ async def help_command(ctx):
     help_text = """🏈 **WURD Bot Commands**
 
 **!available_teams**
-Shows the teams that are currently available.
+Shows all teams that are currently available.
 
 **!playtime <your availability>**
 Saves your normal Madden availability and updates your matchup forum(s).
@@ -994,19 +994,9 @@ Example: `!playtime Weeknights after 7 PM, weekends open`
 Type `time` by itself (no `!`) to receive the current PT, AZ, MT, CT, and ET times by DM.
 """
 
-    try:
-        # Keep the full command list out of public channels.
-        await ctx.author.send(help_text)
-
-        if ctx.guild:
-            await ctx.reply(
-                "📬 I sent the WURD command list to your DMs.",
-                mention_author=False
-            )
-
-    except Exception:
-        # If the user's DMs are closed, show the help where they asked for it.
-        await ctx.send(help_text, allowed_mentions=AllowedMentions.none())
+    # Show the command list in the channel where !help was requested so
+    # other users can discover the available WURD commands too.
+    await ctx.send(help_text, allowed_mentions=AllowedMentions.none())
 
 
 # Link finder + nickname/team parsing (helpers)

@@ -990,7 +990,8 @@ intents.message_content = True   # Enable content reading for messages
 bot = commands.Bot(
     command_prefix="!",
     intents=intents,
-    help_command=None
+    help_command=None,
+    case_insensitive=True
 )
 
 

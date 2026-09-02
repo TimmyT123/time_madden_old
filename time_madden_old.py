@@ -19,6 +19,7 @@ import asyncio
 import logging
 import requests
 import hashlib
+import shutil
 
 from nextcord import File, AllowedMentions
 
@@ -58,6 +59,23 @@ CATEGORY_ID = int(os.getenv("CATEGORY_ID"))  # Text Channels
 ADMIN_ROLE_NAME = 'Admin'  # Admin role name
 # AUTHORIZED_USERS stored as comma-separated string -> convert to list of ints
 AUTHORIZED_USERS = [int(uid.strip()) for uid in os.getenv("AUTHORIZED_USERS", "").split(",") if uid.strip()]  # Bernard and me
+
+# ===============================
+# WURD RULES SYSTEM
+# ===============================
+# RULES_AUTHORIZED_USERS should contain only the Discord user IDs allowed to
+# add/edit/delete rules. If omitted, the existing AUTHORIZED_USERS list is used.
+_rules_authorized_env = [
+    int(uid.strip())
+    for uid in os.getenv("RULES_AUTHORIZED_USERS", "").split(",")
+    if uid.strip()
+]
+RULES_AUTHORIZED_USERS = _rules_authorized_env or list(AUTHORIZED_USERS)
+RULES_FILE = os.getenv("RULES_FILE", "data/rules.json")
+RULES_DEFAULT_FILE = os.getenv("RULES_DEFAULT_FILE", "rules_default.json")
+RULES_CHANNEL_ID = int(os.getenv("RULES_CHANNEL_ID", "0") or 0)
+RULES_CHANNEL_NAME = os.getenv("RULES_CHANNEL_NAME", "league-rules").strip().lower() or "league-rules"
+RULES_LOCK = asyncio.Lock()
 
 # Key: channel_id, Value: {"created_at": datetime, "member_ids": [member1_id, member2_id], "responses": set()}
 channel_activity_tracker = {}
@@ -989,6 +1007,10 @@ Shows all teams that are currently available.
 **!playtime <your availability>**
 Saves your normal Madden availability and updates your matchup forum(s).
 Example: `!playtime Weeknights after 7 PM, weekends open`
+
+**!rules [number or topic]**
+Shows the WURD league rules.
+Examples: `!rules`, `!rules 6`, `!rules ap`, `!rules trades`
 
 **time**
 Type `time` by itself (no `!`) to receive the current PT, AZ, MT, CT, and ET times by DM.
@@ -2453,6 +2475,827 @@ def split_message(message, max_length=2000):
 # Function to check members in a specific channel and save nicknames matching NFL teams
 from pathlib import Path
 
+
+# ============================================================================
+# WURD RULES: public lookup + private commissioner management
+# ============================================================================
+def _rules_now_iso() -> str:
+    return datetime.now(pytz.timezone("US/Arizona")).isoformat()
+
+
+def _ensure_rules_live_file() -> bool:
+    """
+    Ensure the live mutable rules file exists.
+
+    Git should track RULES_DEFAULT_FILE (normally rules_default.json at the
+    project root), while data/rules.json remains ignored and is modified by
+    Discord rule-management commands. On a fresh Pi checkout, copy the seed
+    file into the live data location exactly once. Existing live rules are
+    never overwritten.
+    """
+    if os.path.exists(RULES_FILE):
+        return True
+
+    if not os.path.exists(RULES_DEFAULT_FILE):
+        logger.error(
+            "Live rules file is missing (%s) and seed file was not found (%s)",
+            RULES_FILE,
+            RULES_DEFAULT_FILE,
+        )
+        return False
+
+    parent = os.path.dirname(RULES_FILE)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    tmp = RULES_FILE + ".seed.tmp"
+    try:
+        shutil.copyfile(RULES_DEFAULT_FILE, tmp)
+        os.replace(tmp, RULES_FILE)
+        logger.info(
+            "Created live rules file %s from tracked seed %s",
+            RULES_FILE,
+            RULES_DEFAULT_FILE,
+        )
+        return True
+    except Exception as e:
+        logger.error(
+            "Could not initialize live rules file %s from %s: %s",
+            RULES_FILE,
+            RULES_DEFAULT_FILE,
+            e,
+        )
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def _load_rules_data() -> dict:
+    _ensure_rules_live_file()
+    try:
+        with open(RULES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get("rules"), list):
+            raise ValueError("rules.json must contain a top-level 'rules' list")
+        data.setdefault("schema_version", 2)
+        data.setdefault("sync_enabled", False)
+        data.setdefault("rules_channel_id", None)
+        data.setdefault("index_message_id", None)
+        data.setdefault("audit_log", [])
+        for rule in data["rules"]:
+            rule.setdefault("active", True)
+            rule.setdefault("aliases", [])
+            rule.setdefault("discord_message_id", None)
+            rule.setdefault("updated_by", None)
+            rule.setdefault("updated_at", None)
+        _normalize_rule_numbers(data)
+        return data
+    except FileNotFoundError:
+        logger.error("Rules file not found: %s", RULES_FILE)
+        return {"schema_version": 2, "rules": [], "sync_enabled": False, "audit_log": []}
+    except Exception as e:
+        logger.error("Could not load rules data: %s", e)
+        return {"schema_version": 2, "rules": [], "sync_enabled": False, "audit_log": []}
+
+
+def _save_rules_data(data: dict, *, backup: bool = True) -> None:
+    """Atomically save rules.json. Keep one .bak copy of the previous file."""
+    parent = os.path.dirname(RULES_FILE)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    if backup and os.path.exists(RULES_FILE):
+        try:
+            with open(RULES_FILE, "rb") as src_f, open(RULES_FILE + ".bak", "wb") as bak_f:
+                bak_f.write(src_f.read())
+        except Exception as e:
+            logger.warning("Could not create rules backup: %s", e)
+
+    tmp = RULES_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.replace(tmp, RULES_FILE)
+
+
+def _normalize_rule_numbers(data: dict) -> None:
+    """Keep active public rules numbered contiguously; preserve old numbers on archived rules."""
+    rules = data.get("rules", [])
+    active = [r for r in rules if r.get("active", True)]
+    active.sort(key=lambda r: (
+        r.get("number") if isinstance(r.get("number"), int) else 10**9,
+        str(r.get("title", "")).casefold(),
+    ))
+
+    for idx, rule in enumerate(active, start=1):
+        rule["number"] = idx
+
+    for rule in rules:
+        if not rule.get("active", True):
+            if rule.get("number") is not None:
+                rule.setdefault("former_number", rule.get("number"))
+            rule["number"] = None
+
+    data["next_rule_number"] = len(active) + 1
+
+
+def _active_rules(data: dict) -> list[dict]:
+    _normalize_rule_numbers(data)
+    return sorted(
+        [r for r in data.get("rules", []) if r.get("active", True)],
+        key=lambda r: int(r.get("number") or 10**9),
+    )
+
+
+def _rule_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").casefold())
+
+
+def _resolve_rule(data: dict, query: str) -> tuple[dict | None, list[dict]]:
+    """Resolve a public rule by displayed number, ID, title, or alias."""
+    q = (query or "").strip()
+    active = _active_rules(data)
+    if not q:
+        return None, []
+
+    if q.isdigit():
+        wanted = int(q)
+        for rule in active:
+            if int(rule.get("number") or -1) == wanted:
+                return rule, []
+        return None, []
+
+    token = _rule_token(q)
+    exact = []
+    partial = []
+    for rule in active:
+        candidates = [
+            str(rule.get("id", "")),
+            str(rule.get("title", "")),
+            *[str(a) for a in rule.get("aliases", [])],
+        ]
+        candidate_tokens = [_rule_token(x) for x in candidates if x]
+        if token in candidate_tokens:
+            exact.append(rule)
+        elif token and any(token in ct or ct in token for ct in candidate_tokens if ct):
+            partial.append(rule)
+
+    if len(exact) == 1:
+        return exact[0], []
+    if len(exact) > 1:
+        return None, exact
+    if len(partial) == 1:
+        return partial[0], []
+    return None, partial[:5]
+
+
+def _rule_by_id(data: dict, rule_id: str, *, include_inactive: bool = False) -> dict | None:
+    for rule in data.get("rules", []):
+        if str(rule.get("id")) == str(rule_id):
+            if include_inactive or rule.get("active", True):
+                return rule
+    return None
+
+
+def _rules_slug(title: str, data: dict) -> str:
+    base = re.sub(r"[^a-z0-9]+", "_", (title or "rule").casefold()).strip("_") or "rule"
+    used = {str(r.get("id")) for r in data.get("rules", [])}
+    candidate = base
+    n = 2
+    while candidate in used:
+        candidate = f"{base}_{n}"
+        n += 1
+    return candidate
+
+
+def _parse_rule_aliases(raw: str) -> list[str]:
+    parts = re.split(r"[,\n]+", raw or "")
+    result = []
+    seen = set()
+    for part in parts:
+        alias = re.sub(r"\s+", " ", part).strip()
+        if not alias:
+            continue
+        key = alias.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(alias)
+    return result[:30]
+
+
+def _rules_audit(data: dict, action: str, user_id: int, rule: dict | None = None, details: str | None = None) -> None:
+    entry = {
+        "at": _rules_now_iso(),
+        "action": action,
+        "user_id": int(user_id),
+    }
+    if rule:
+        entry["rule_id"] = rule.get("id")
+        entry["rule_number"] = rule.get("number")
+        entry["title"] = rule.get("title")
+    if details:
+        entry["details"] = details
+    log = data.setdefault("audit_log", [])
+    log.append(entry)
+    if len(log) > 200:
+        del log[:-200]
+
+
+async def _rules_admin_user(user_id: int) -> bool:
+    """Rule editors must be explicitly allow-listed AND currently have the Admin role."""
+    try:
+        uid = int(user_id)
+    except Exception:
+        return False
+
+    if uid not in RULES_AUTHORIZED_USERS:
+        return False
+
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return False
+
+    member = guild.get_member(uid)
+    if member is None:
+        try:
+            member = await guild.fetch_member(uid)
+        except Exception:
+            return False
+
+    return any(role.name == ADMIN_ROLE_NAME for role in getattr(member, "roles", []))
+
+
+def _rules_index_text(data: dict, *, include_admin: bool = False) -> str:
+    rules = _active_rules(data)
+    lines = [
+        "📘 **WURD LEAGUE RULES**",
+        "",
+    ]
+    for rule in rules:
+        lines.append(f"**{rule['number']}.** {rule.get('title', 'Untitled Rule')}")
+
+    lines += [
+        "",
+        "Type `!rules <number>` or a topic name.",
+        "Examples: `!rules 6`, `!rules ap`, `!rules trades`",
+        "",
+        "Full rulebook: **#league-rules**",
+    ]
+
+    if include_admin:
+        lines += [
+            "",
+            "🔧 **ADMIN RULE MANAGEMENT**",
+            "`!rules manage` — show these controls",
+            "`!rules add` — add a rule using a private form",
+            "`!rules edit <number>` — edit a rule using a private form",
+            "`!rules delete <number>` — archive/delete a public rule",
+            "`!rules publish` — one-time publish of the bot-managed rulebook",
+            "`!rules sync` — manually resync #league-rules",
+        ]
+    return "\n".join(lines)
+
+
+def _rules_admin_help_text() -> str:
+    return (
+        "🔧 **WURD RULE MANAGEMENT**\n\n"
+        "`!rules add` — Add a new rule\n"
+        "`!rules edit <number>` — Edit an existing rule\n"
+        "`!rules delete <number>` — Archive a rule after confirmation\n"
+        "`!rules publish` — Publish the first bot-managed copy to #league-rules\n"
+        "`!rules sync` — Resync the bot-managed #league-rules messages\n\n"
+        "Normal lookups still work here too: `!rules 6`, `!rules ap`, etc."
+    )
+
+
+def _rule_lookup_text(rule: dict) -> str:
+    return (
+        f"📘 **RULE {rule.get('number')} — {rule.get('title', 'Untitled Rule').upper()}**\n\n"
+        f"{rule.get('content', '').strip()}\n\n"
+        "📌 Full rulebook: **#league-rules**"
+    )
+
+
+def _rule_embed(rule: dict) -> nextcord.Embed:
+    embed = nextcord.Embed(
+        title=f"📘 RULE {rule.get('number')} — {rule.get('title', 'Untitled Rule')}",
+        description=(rule.get("content") or "(No rule text.)")[:4096],
+    )
+    embed.set_footer(text="WURD official rules data • Quick lookup: !rules <number or topic>")
+    return embed
+
+
+async def _get_rules_channel():
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return None
+
+    if RULES_CHANNEL_ID:
+        channel = guild.get_channel(RULES_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(RULES_CHANNEL_ID)
+            except Exception:
+                channel = None
+        if channel is not None:
+            return channel
+
+    for channel in guild.text_channels:
+        if channel.name.casefold() == RULES_CHANNEL_NAME.casefold():
+            return channel
+    return None
+
+
+async def _fetch_rules_message(channel, message_id):
+    if not message_id:
+        return None
+    try:
+        return await channel.fetch_message(int(message_id))
+    except Exception:
+        return None
+
+
+async def _sync_rules_channel(data: dict) -> tuple[bool, str]:
+    """Create/edit the bot-managed rulebook messages without touching legacy user posts."""
+    channel = await _get_rules_channel()
+    if channel is None:
+        return False, "I couldn't find the `#league-rules` channel."
+
+    data["rules_channel_id"] = int(channel.id)
+
+    index_text = (
+        "🏈 **WURD MADDEN LEAGUE RULES**\n\n"
+        "These rules exist to keep the league competitive, fair, organized, and drama-free. "
+        "By joining WURD, you agree to follow all league rules.\n\n"
+        + _rules_index_text(data, include_admin=False)
+        + "\n\n📌 This channel is generated from the official `rules.json` data."
+    )
+
+    index_msg = await _fetch_rules_message(channel, data.get("index_message_id"))
+    if index_msg and index_msg.author.id == bot.user.id:
+        try:
+            await index_msg.edit(content=index_text, embed=None, allowed_mentions=AllowedMentions.none())
+        except Exception:
+            index_msg = None
+    else:
+        index_msg = None
+
+    if index_msg is None:
+        try:
+            index_msg = await channel.send(index_text, allowed_mentions=AllowedMentions.none())
+            data["index_message_id"] = int(index_msg.id)
+            try:
+                await index_msg.pin(reason="WURD official rules index")
+            except Exception as e:
+                logger.warning("Could not pin WURD rules index: %s", e)
+        except Exception as e:
+            return False, f"I found #league-rules but could not post the index: {e}"
+
+    # Remove bot-managed messages for rules that have since been archived.
+    for rule in data.get("rules", []):
+        if rule.get("active", True) or not rule.get("discord_message_id"):
+            continue
+        old_msg = await _fetch_rules_message(channel, rule.get("discord_message_id"))
+        if old_msg and old_msg.author.id == bot.user.id:
+            try:
+                await old_msg.delete()
+            except Exception as e:
+                logger.warning("Could not remove archived rule message %s: %s", rule.get("id"), e)
+        rule["discord_message_id"] = None
+
+    for rule in _active_rules(data):
+        msg = await _fetch_rules_message(channel, rule.get("discord_message_id"))
+        if msg and msg.author.id == bot.user.id:
+            try:
+                await msg.edit(content=None, embed=_rule_embed(rule), allowed_mentions=AllowedMentions.none())
+            except Exception as e:
+                logger.warning("Could not edit rule message %s: %s", rule.get("id"), e)
+                msg = None
+        else:
+            msg = None
+
+        if msg is None:
+            try:
+                msg = await channel.send(embed=_rule_embed(rule), allowed_mentions=AllowedMentions.none())
+                rule["discord_message_id"] = int(msg.id)
+            except Exception as e:
+                return False, f"Stopped while posting Rule {rule.get('number')}: {e}"
+
+        await asyncio.sleep(0.15)
+
+    _save_rules_data(data, backup=False)
+    return True, f"Synced {len(_active_rules(data))} rules to #{getattr(channel, 'name', 'league-rules')}."
+
+
+async def _sync_after_rule_change(data: dict) -> str:
+    if not data.get("sync_enabled", False):
+        return "Rule saved. #league-rules sync is not enabled yet; DM `!rules publish` when you're ready to publish the bot-managed rulebook."
+    ok, detail = await _sync_rules_channel(data)
+    return ("Rule saved and " + detail) if ok else ("Rule saved, but channel sync failed: " + detail)
+
+
+async def _send_rules_chunks(target, text: str) -> None:
+    for chunk in split_message(text, max_length=1950):
+        await target.send(chunk, allowed_mentions=AllowedMentions.none())
+
+
+class RuleAddModal(nextcord.ui.Modal):
+    def __init__(self, user_id: int):
+        super().__init__(title="Add WURD Rule", timeout=300)
+        self.user_id = int(user_id)
+        self.rule_title = nextcord.ui.TextInput(
+            label="Rule title",
+            placeholder="Example: Salary Cap Rules",
+            required=True,
+            max_length=100,
+        )
+        self.aliases = nextcord.ui.TextInput(
+            label="Aliases (comma separated)",
+            placeholder="salary, cap, contracts",
+            required=False,
+            max_length=300,
+        )
+        self.rule_text = nextcord.ui.TextInput(
+            label="Rule text",
+            placeholder="Enter the full official rule wording...",
+            style=nextcord.TextInputStyle.paragraph,
+            required=True,
+            max_length=4000,
+        )
+        self.add_item(self.rule_title)
+        self.add_item(self.aliases)
+        self.add_item(self.rule_text)
+
+    async def callback(self, interaction: nextcord.Interaction):
+        if interaction.user.id != self.user_id or not await _rules_admin_user(interaction.user.id):
+            await interaction.response.send_message("⛔ You are not authorized to manage WURD rules.")
+            return
+
+        title = re.sub(r"\s+", " ", str(self.rule_title.value or "")).strip()
+        content = str(self.rule_text.value or "").strip()
+        if not title or not content:
+            await interaction.response.send_message("❌ A title and rule text are required.")
+            return
+
+        await interaction.response.defer()
+        async with RULES_LOCK:
+            data = _load_rules_data()
+            rule = {
+                "number": data.get("next_rule_number", len(_active_rules(data)) + 1),
+                "id": _rules_slug(title, data),
+                "title": title,
+                "aliases": _parse_rule_aliases(str(self.aliases.value or "")),
+                "active": True,
+                "content": content,
+                "source": "Added via Discord rule manager",
+                "discord_message_id": None,
+                "updated_by": int(interaction.user.id),
+                "updated_at": _rules_now_iso(),
+            }
+            data.setdefault("rules", []).append(rule)
+            _normalize_rule_numbers(data)
+            _rules_audit(data, "add", interaction.user.id, rule)
+            _save_rules_data(data)
+            sync_note = await _sync_after_rule_change(data)
+
+        await interaction.followup.send(
+            f"✅ Added **Rule {rule['number']} — {rule['title']}**.\n{sync_note}",
+            allowed_mentions=AllowedMentions.none(),
+        )
+
+
+class RuleAddView(nextcord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=180)
+        self.user_id = int(user_id)
+
+    @nextcord.ui.button(label="Add Rule", style=nextcord.ButtonStyle.green, emoji="➕")
+    async def add_rule(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        if interaction.user.id != self.user_id or not await _rules_admin_user(interaction.user.id):
+            await interaction.response.send_message("⛔ This control is not available to you.")
+            return
+        await interaction.response.send_modal(RuleAddModal(interaction.user.id))
+
+
+class RuleEditModal(nextcord.ui.Modal):
+    def __init__(self, user_id: int, rule: dict):
+        super().__init__(title=f"Edit Rule {rule.get('number')}", timeout=300)
+        self.user_id = int(user_id)
+        self.rule_id = str(rule.get("id"))
+        self.rule_title = nextcord.ui.TextInput(
+            label="Rule title",
+            required=True,
+            max_length=100,
+            default_value=str(rule.get("title") or ""),
+        )
+        self.aliases = nextcord.ui.TextInput(
+            label="Aliases (comma separated)",
+            required=False,
+            max_length=300,
+            default_value=", ".join(str(a) for a in rule.get("aliases", []))[:300] or None,
+        )
+        self.rule_text = nextcord.ui.TextInput(
+            label="Rule text",
+            style=nextcord.TextInputStyle.paragraph,
+            required=True,
+            max_length=4000,
+            default_value=str(rule.get("content") or "")[:4000],
+        )
+        self.add_item(self.rule_title)
+        self.add_item(self.aliases)
+        self.add_item(self.rule_text)
+
+    async def callback(self, interaction: nextcord.Interaction):
+        if interaction.user.id != self.user_id or not await _rules_admin_user(interaction.user.id):
+            await interaction.response.send_message("⛔ You are not authorized to manage WURD rules.")
+            return
+
+        title = re.sub(r"\s+", " ", str(self.rule_title.value or "")).strip()
+        content = str(self.rule_text.value or "").strip()
+        if not title or not content:
+            await interaction.response.send_message("❌ A title and rule text are required.")
+            return
+
+        await interaction.response.defer()
+        async with RULES_LOCK:
+            data = _load_rules_data()
+            rule = _rule_by_id(data, self.rule_id)
+            if rule is None:
+                await interaction.followup.send("❌ That rule no longer exists or has been archived.")
+                return
+
+            rule["title"] = title
+            rule["aliases"] = _parse_rule_aliases(str(self.aliases.value or ""))
+            rule["content"] = content
+            rule["updated_by"] = int(interaction.user.id)
+            rule["updated_at"] = _rules_now_iso()
+            _rules_audit(data, "edit", interaction.user.id, rule)
+            _save_rules_data(data)
+            sync_note = await _sync_after_rule_change(data)
+
+        await interaction.followup.send(
+            f"✅ Updated **Rule {rule['number']} — {rule['title']}**.\n{sync_note}",
+            allowed_mentions=AllowedMentions.none(),
+        )
+
+
+class RuleEditView(nextcord.ui.View):
+    def __init__(self, user_id: int, rule_id: str, rule_number: int, title: str):
+        super().__init__(timeout=180)
+        self.user_id = int(user_id)
+        self.rule_id = str(rule_id)
+        self.rule_number = int(rule_number)
+        self.title = title
+
+    @nextcord.ui.button(label="Edit Rule", style=nextcord.ButtonStyle.blurple, emoji="✏️")
+    async def edit_rule(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        if interaction.user.id != self.user_id or not await _rules_admin_user(interaction.user.id):
+            await interaction.response.send_message("⛔ This control is not available to you.")
+            return
+        data = _load_rules_data()
+        rule = _rule_by_id(data, self.rule_id)
+        if rule is None:
+            await interaction.response.send_message("❌ That rule no longer exists or has been archived.")
+            return
+        await interaction.response.send_modal(RuleEditModal(interaction.user.id, rule))
+
+
+class RuleDeleteConfirmView(nextcord.ui.View):
+    def __init__(self, user_id: int, rule_id: str):
+        super().__init__(timeout=180)
+        self.user_id = int(user_id)
+        self.rule_id = str(rule_id)
+
+    @nextcord.ui.button(label="Delete / Archive Rule", style=nextcord.ButtonStyle.red, emoji="🗑️")
+    async def confirm_delete(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        if interaction.user.id != self.user_id or not await _rules_admin_user(interaction.user.id):
+            await interaction.response.send_message("⛔ This control is not available to you.")
+            return
+
+        await interaction.response.defer()
+        async with RULES_LOCK:
+            data = _load_rules_data()
+            rule = _rule_by_id(data, self.rule_id)
+            if rule is None:
+                await interaction.followup.send("❌ That rule no longer exists or has already been archived.")
+                return
+
+            old_number = rule.get("number")
+            old_title = rule.get("title")
+            rule["former_number"] = old_number
+            rule["active"] = False
+            rule["number"] = None
+            rule["deleted_by"] = int(interaction.user.id)
+            rule["deleted_at"] = _rules_now_iso()
+            _normalize_rule_numbers(data)
+            _rules_audit(data, "delete", interaction.user.id, rule, details=f"Former Rule {old_number}")
+            _save_rules_data(data)
+            sync_note = await _sync_after_rule_change(data)
+
+        try:
+            if interaction.message:
+                await interaction.message.edit(view=None)
+        except Exception:
+            pass
+        self.stop()
+        await interaction.followup.send(
+            f"✅ Archived former **Rule {old_number} — {old_title}**.\n{sync_note}",
+            allowed_mentions=AllowedMentions.none(),
+        )
+
+    @nextcord.ui.button(label="Cancel", style=nextcord.ButtonStyle.gray, emoji="✖️")
+    async def cancel_delete(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This confirmation belongs to another user.")
+            return
+        try:
+            await interaction.response.edit_message(content="✅ Delete cancelled.", view=None)
+        except Exception:
+            await interaction.response.send_message("✅ Delete cancelled.")
+        self.stop()
+
+
+class RulePublishConfirmView(nextcord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=180)
+        self.user_id = int(user_id)
+
+    @nextcord.ui.button(label="Publish Bot-Managed Rulebook", style=nextcord.ButtonStyle.green, emoji="📘")
+    async def publish(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        if interaction.user.id != self.user_id or not await _rules_admin_user(interaction.user.id):
+            await interaction.response.send_message("⛔ This control is not available to you.")
+            return
+
+        await interaction.response.defer()
+        async with RULES_LOCK:
+            data = _load_rules_data()
+            data["sync_enabled"] = True
+            _rules_audit(data, "publish", interaction.user.id, details="Enabled #league-rules synchronization")
+            _save_rules_data(data)
+            ok, detail = await _sync_rules_channel(data)
+            if not ok:
+                data["sync_enabled"] = False
+                _save_rules_data(data, backup=False)
+
+        try:
+            if interaction.message:
+                await interaction.message.edit(view=None)
+        except Exception:
+            pass
+        self.stop()
+
+        if ok:
+            await interaction.followup.send(
+                "✅ " + detail + "\n\n"
+                "I did **not** delete the old manually-posted rule messages. Review the bot-managed rulebook first, "
+                "then you can remove the old manual copies when you're satisfied.",
+                allowed_mentions=AllowedMentions.none(),
+            )
+        else:
+            await interaction.followup.send("❌ Publish failed: " + detail, allowed_mentions=AllowedMentions.none())
+
+
+@bot.command(name="rules")
+async def rules_command(ctx, *, query: str = ""):
+    query = (query or "").strip()
+    data = _load_rules_data()
+    if not data.get("rules"):
+        await ctx.send("❌ WURD rules data is not available right now.", allowed_mentions=AllowedMentions.none())
+        return
+
+    is_rules_admin = await _rules_admin_user(ctx.author.id)
+    parts = query.split(maxsplit=1)
+    action = parts[0].casefold() if parts else ""
+    argument = parts[1].strip() if len(parts) > 1 else ""
+    management_actions = {"manage", "add", "edit", "delete", "publish", "sync"}
+
+    # No argument: everyone gets the same public menu. Authorized admins get the
+    # extra management reminder only when they DM the bot.
+    if not query:
+        include_admin = (ctx.guild is None and is_rules_admin)
+        await _send_rules_chunks(ctx, _rules_index_text(data, include_admin=include_admin))
+        return
+
+    if action in management_actions:
+        if not is_rules_admin:
+            await ctx.send(
+                "I couldn't find that rule. Type `!rules` to see the rule list.",
+                allowed_mentions=AllowedMentions.none(),
+            )
+            return
+
+        # Commissioner management is private. If typed publicly, say nothing in
+        # the channel and DM the reminder the user requested.
+        if ctx.guild is not None:
+            try:
+                await ctx.author.send(
+                    f"🔒 Rule management is private. DM me `!rules {query}`.",
+                    allowed_mentions=AllowedMentions.none(),
+                )
+            except Exception as e:
+                logger.warning("Could not DM private rules-management reminder to %s: %s", ctx.author.id, e)
+            return
+
+        if action == "manage":
+            await ctx.send(_rules_admin_help_text(), allowed_mentions=AllowedMentions.none())
+            return
+
+        if action == "add":
+            await ctx.send(
+                "➕ **Add a WURD rule**\nClick the button below to open the private rule form.",
+                view=RuleAddView(ctx.author.id),
+                allowed_mentions=AllowedMentions.none(),
+            )
+            return
+
+        if action == "edit":
+            if not argument:
+                await ctx.send("Usage: `!rules edit <number or topic>`\nExample: `!rules edit 6`")
+                return
+            rule, matches = _resolve_rule(data, argument)
+            if rule is None:
+                if matches:
+                    choices = ", ".join(f"{r['number']}. {r['title']}" for r in matches)
+                    await ctx.send(f"I found multiple possible rules: {choices}\nTry the rule number.")
+                else:
+                    await ctx.send("❌ I couldn't find that active rule. Type `!rules` to see the list.")
+                return
+            await ctx.send(
+                f"✏️ **Edit Rule {rule['number']} — {rule['title']}**\n"
+                "Click below to open the current rule in a private form.",
+                view=RuleEditView(ctx.author.id, rule["id"], rule["number"], rule["title"]),
+                allowed_mentions=AllowedMentions.none(),
+            )
+            return
+
+        if action == "delete":
+            if not argument:
+                await ctx.send("Usage: `!rules delete <number or topic>`\nExample: `!rules delete 6`")
+                return
+            rule, matches = _resolve_rule(data, argument)
+            if rule is None:
+                if matches:
+                    choices = ", ".join(f"{r['number']}. {r['title']}" for r in matches)
+                    await ctx.send(f"I found multiple possible rules: {choices}\nTry the rule number.")
+                else:
+                    await ctx.send("❌ I couldn't find that active rule. Type `!rules` to see the list.")
+                return
+            await ctx.send(
+                f"⚠️ **Archive/Delete Rule {rule['number']} — {rule['title']}?**\n\n"
+                "It will disappear from `!rules` and from the bot-managed #league-rules channel, "
+                "but its data is retained as an archived rule for recovery.",
+                view=RuleDeleteConfirmView(ctx.author.id, rule["id"]),
+                allowed_mentions=AllowedMentions.none(),
+            )
+            return
+
+        if action == "publish":
+            if data.get("sync_enabled", False):
+                await ctx.send(
+                    "✅ Bot-managed #league-rules syncing is already enabled. Use `!rules sync` to force a refresh."
+                )
+                return
+            await ctx.send(
+                "📘 **Publish the bot-managed WURD rulebook?**\n\n"
+                "This will post a new rules index plus one bot-owned message for every active rule in #league-rules.\n"
+                "**It will not delete the old manual messages.**",
+                view=RulePublishConfirmView(ctx.author.id),
+                allowed_mentions=AllowedMentions.none(),
+            )
+            return
+
+        if action == "sync":
+            if not data.get("sync_enabled", False):
+                await ctx.send("Sync is not enabled yet. Use `!rules publish` first.")
+                return
+            async with RULES_LOCK:
+                ok, detail = await _sync_rules_channel(data)
+            await ctx.send(("✅ " if ok else "❌ ") + detail, allowed_mentions=AllowedMentions.none())
+            return
+
+    # Normal public/DM rule lookup.
+    rule, matches = _resolve_rule(data, query)
+    if rule:
+        await _send_rules_chunks(ctx, _rule_lookup_text(rule))
+        return
+
+    if matches:
+        suggestions = "\n".join(f"• `{r['number']}` — {r['title']}" for r in matches)
+        await ctx.send(
+            "I found more than one possible rule. Try one of these:\n" + suggestions,
+            allowed_mentions=AllowedMentions.none(),
+        )
+    else:
+        await ctx.send(
+            "❌ I couldn't find that rule. Type `!rules` to see the numbered rule list.",
+            allowed_mentions=AllowedMentions.none(),
+        )
+
+
 def nicknames_to_users_file():
     """
     Scan the whole guild and write wurd24users.csv with user-controlled teams.
@@ -3422,6 +4265,10 @@ async def on_ready():
     global startup_loops_started
     global members_synced_on_startup
     global _current_week, _current_pairs, _current_matchups
+
+    # First-run rules bootstrap: the tracked seed creates data/rules.json only
+    # when the live file does not already exist. It never overwrites live rules.
+    _ensure_rules_live_file()
 
     load_team_id_mapping()
 

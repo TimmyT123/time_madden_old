@@ -1,0 +1,275 @@
+{
+  "schema_version": 2,
+  "league": "WURD Madden League",
+  "channel_name": "league-rules",
+  "channel_id": null,
+  "next_rule_number": 13,
+  "notes": [
+    "Imported from the existing #league-rules channel.",
+    "Rule wording is preserved in substance; Discord asset links were removed and formatting was normalized.",
+    "The later Chiefs quit/onside-kick amendment is kept as a separate rule until commissioners decide how it should be merged.",
+    "Commissioner clarification: quitting and onside kicks are prohibited at all times; a regular-season illegal onside kick forfeits a draft pick to the opponent at commissioner discretion; quitting or an onside kick in the playoffs justifies removal."
+  ],
+  "rules": [
+    {
+      "number": 1,
+      "id": "league_settings",
+      "title": "League Settings",
+      "aliases": [
+        "settings",
+        "league",
+        "advance",
+        "quarters",
+        "playcall"
+      ],
+      "active": true,
+      "content": "✅ 48-hour advance cycles for User vs User games\n✅ 24-hour response once game channel is created\n✅ Stay active — play games or communicate\n✅ Respect all league members and commissioners\n✅ All-Madden difficulty\n✅ 7-minute quarters\n✅ 5 playcall limit / 5 play cooldown\n\n📌 Advance times are targeted, not guaranteed to the minute.",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 2,
+      "id": "core_rules",
+      "title": "Core Rules",
+      "aliases": [
+        "behavior",
+        "concede",
+        "conduct",
+        "core",
+        "draftpick",
+        "lobby",
+        "onside",
+        "onsidekick",
+        "penalty",
+        "playoffs",
+        "quit",
+        "quitting"
+      ],
+      "active": true,
+      "content": "❌ No quitting or conceding User vs User games at any time.\n❌ No onside kicks at any time.\n❌ No cheesing or abusive gameplay.\n❌ No toxic behavior, harassment, or escalation.\n❌ Inactive for 3+ games may result in removal.\n❌ No public disputes, accusations, or profanity in lobby-talk.\n\n**QUITTING / ONSIDE-KICK PENALTIES**\n• During the regular season, an illegal onside kick will result in the offending team forfeiting a draft pick to the opponent. Commissioners decide which pick is forfeited.\n• In the playoffs, quitting or attempting an onside kick justifies removal from the league.\n\n➡️ Lobby-talk is a shared space and is moderated.\n➡️ Game channels may be more casual, but lobby-talk must remain respectful.\n➡️ Repeated issues may result in moderation or restricted chat access.\n\n➿ For rule clarification, contact a Commissioner.",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 3,
+      "id": "gameplay",
+      "title": "Gameplay Rules",
+      "aliases": [
+        "gameplay",
+        "4thdown",
+        "fourthdown",
+        "catch",
+        "nohuddle",
+        "no-huddle"
+      ],
+      "active": true,
+      "content": "**4TH DOWN RULE**\n▪️ 1st Half: You may ONLY go for it on 4th & 1 or shorter.\n▪️ 2nd Half: You may go for it on any 4th down.\n\n**CATCH / DEFENDER CONTACT RULE**\n❌ No bumping defenders while trying to make a catch.\n\n**NO-HUDDLE RULE**\n❌ No excessive no-huddle in the 1st half, unless you are down by 17+ points.",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 4,
+      "id": "team_ownership_position_changes",
+      "title": "Team Ownership & Position Changes",
+      "aliases": [
+        "ownership",
+        "teamownership",
+        "positions",
+        "position",
+        "positionchanges"
+      ],
+      "active": true,
+      "content": "**TEAM OWNERSHIP**\n🏈 Once a team is selected, you own that team for 3 seasons before becoming eligible to switch.\n\n**ALLOWED POSITION CHANGES**\nAllowed:\n✅ Safety ↔ Cornerback\n✅ OLB ↔ Defensive End\n✅ Offensive Line ↔ Offensive Line\n✅ Fullback ↔ Tight End\n\nNot Allowed:\n❌ WR ↔ TE\n❌ RB ↔ WR, except Madden Deebo packages\n❌ Safety/CB ↔ Linebacker\n❌ Changing QB throwing hand or style\n\n📌 Sub-packages or animations do not count as position changes.",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 5,
+      "id": "draft_transactions",
+      "title": "Draft & Transactions",
+      "aliases": [
+        "draft",
+        "transactions",
+        "rookies",
+        "freeagency",
+        "fa",
+        "contracts",
+        "tradebacks"
+      ],
+      "active": true,
+      "content": "❌ Max 3 first-round picks per draft\n❌ Max 12 total picks per draft\n❌ Max contract length: 5 years\n➡️ Example: If 1 year remains, you may extend 4 additional years.\n❌ Rookies cannot be traded.\n\n**Preseason Free Agency Limit**\n• During preseason, each team may sign ONE free agent per advance.\n• Once the regular season begins, free agency is unrestricted.\n\n**No Trade Backs**\n❌ Players traded away cannot be traded back to the same team during that season.\n\n**No Transaction Manipulation**\nUsers may not manipulate roster mechanics through actions such as:\n• Dropping valuable players for another user to sign\n• Multi-step trades designed to bypass trade fairness\n• Trading a player away with the intention of reacquiring them later\n\n📌 Any attempt to bypass roster rules may result in player reversal, restricted roster control, or removal from the league.\n📌 Transactions are monitored by Commissioners and league staff to ensure rule compliance.",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 6,
+      "id": "cpu_games_ap",
+      "title": "CPU Games & Auto-Pilot",
+      "aliases": [
+        "cpu",
+        "ap",
+        "autopilot",
+        "auto-pilot",
+        "forcesim",
+        "fs",
+        "forcewin",
+        "fw"
+      ],
+      "active": true,
+      "content": "**CPU GAMES**\n• If a CPU game is started, it must be completed.\n• A started CPU game that is not completed before advance = FL, unless prior Commissioner approval is granted before advance.\n• CPU disconnects require resume-screen proof or may result in an FL.\n• Intentionally exiting a CPU game to avoid a loss may result in disciplinary action.\n• For User vs CPU teams (Play, FS, or FW), users are responsible for notifying a Commissioner if they want a FW.\n• If no Commissioner is notified before advance, Commissioners will assume the user chose to play the CPU.\n• This rule is meant to keep advances moving and prevent Commissioners from having to chase users for decisions.\n\n**WHEN A USER IS ON APPROVED AP**\nFirst 3 advances:\n• Opponent may play CPU or take FS\n• ❌ No FW\n\nAfter 3 advances:\n• Opponent may play CPU\n• Or request a FW with Commissioner approval\n\n**LONG-TERM AP TRACKING**\nAP is tracked per user, not per session.\n• Returning for a single game does not reset AP status.\n• User must return and be active for 2 full advances to reset AP status.\n\n📌 If a user repeatedly goes on AP to avoid games or FWs, Commissioners may:\n• Remove team control\n• Assign permanent CPU\n• Remove user from league",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 7,
+      "id": "disconnect_connection",
+      "title": "Disconnects & Connection Requirements",
+      "aliases": [
+        "disconnect",
+        "disconnects",
+        "connection",
+        "desync",
+        "drops",
+        "internet",
+        "wifi"
+      ],
+      "active": true,
+      "content": "**DISCONNECT POLICY — 1ST HALF DROPS**\nIf a game drops in the 1st half, the game will be restarted/continued with the same score from the dropped game.\n📌 Users should communicate the score, quarter, and situation in the game channel when possible.\n\n**2ND HALF DROPS**\nIf a game drops in the 2nd half, Commissioners may decide the result based on:\n• Current score\n• Quarter/time remaining\n• Game situation\n• History of connection issues\n• Available proof or stream/video\n📌 Commissioner discretion applies in all disconnect situations.\n\n**CONNECTION REQUIREMENTS**\n• All users must have a stable internet connection.\n• WiFi is allowed, but ethernet is recommended.\n• Users are responsible for their connection quality.\n⚠️ Repeated connection issues may result in restricted team control or AP status until resolved.\n\n**NO EXPLOITATION / NO ASSUMPTIONS**\n• Intentionally disconnecting to avoid a loss is against league rules.\n• Desyncs alone will not be used as proof of cheating or tampering.\n• The league will not assume intent based on when or how a disconnect occurs.\n📌 Claims of exploitation must be supported by:\n• Clear video evidence and/or\n• A consistent pattern of repeated issues\n📌 Single incidents or assumptions will not determine intent.",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 8,
+      "id": "streaming_monitoring",
+      "title": "Streaming & Connection Monitoring",
+      "aliases": [
+        "streaming",
+        "stream",
+        "monitoring",
+        "vod",
+        "twitch",
+        "wifiwatch"
+      ],
+      "active": true,
+      "content": "**WIFI WATCH MONITORING, IF NEEDED**\nUsers with repeated connection issues may be asked to stream or record games.\n\nIf streaming is required:\n➡️ Twitch VOD storage must be enabled so games can be reviewed after completion.\n➡️ Live viewing is not required.\n➡️ Review will be handled in a commissioner-managed channel.\n➡️ Users will be added case-by-case only. No public watch lists.\n📌 If a game disconnects or desyncs while a user is under connection monitoring, Commissioner discretion applies.\n\n**STREAMING**\n🎥 Streaming is mandatory in PLAYOFFS ONLY.\n📶 Users are expected to have a stable connection capable of streaming.\n➡️ Recommended upload speed: 10 Mbps or higher for a reliable stream.\n📌 If a user cannot provide a stable playoff stream, Commissioners may require recording, Twitch VOD, or another form of proof if needed.",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 9,
+      "id": "scheduling_commitments",
+      "title": "Game Scheduling & Commitments",
+      "aliases": [
+        "scheduling",
+        "schedule",
+        "commitment",
+        "commitments",
+        "noresponse",
+        "noshow"
+      ],
+      "active": true,
+      "content": "**GAME CHANNEL COMMUNICATION RULE**\nUsers are expected to schedule and communicate early after advance.\nIf a user does not respond in the game channel for 24 hours, a reminder may be sent.\n\n➡️ If one user communicates and the other does not: After the full 24-hour silence period, the active user may:\n• Play the CPU/AP\n• Or request the FW\n➡️ If the active user does not notify a Commissioner of their decision, the game defaults to FS.\n➡️ If the inactive user responds before a FW is claimed or CPU game is started, the game is back on.\n➡️ If both users do not communicate, the game will be FS at advance.\n➡️ Once a FW is claimed or CPU game is started, the decision is final.\n📅 Scheduling a game is a commitment, not a suggestion.\n\n**CONFIRMED COMMITMENT**\nA confirmed commitment requires a specific date and time to be proposed and clearly accepted.\nExamples:\n• “Yes”\n• “Ok”\n• “Confirmed”\n• “That works”\nIf one user is ready at the agreed time and the opponent does not respond within 15 minutes, the waiting user may request a FW, subject to Commissioner verification.\n\n**TENTATIVE COMMITMENT**\nUncertain responses include:\n• “Probably”\n• “Should work”\n• “I’ll try”\nGood-faith effort is required. Users must notify their opponent if plans change. No-show without notice may result in a FW at Commissioner discretion.\n\n**NOT A COMMITMENT**\nVague availability does not count as a confirmed game time.\nExamples:\n• “Later”\n• “After work”\n• “Sometime today”\n📌 Availability windows alone do not qualify for FW eligibility.\n📌 A specific start time must be clearly accepted in the game channel to qualify as a confirmed commitment.\n📌 FWs are final and will not be reversed by later availability.\n\n**MUTUAL SCHEDULING CONFLICT**\nIf both users communicate in good faith but cannot align schedules before advance, the game will be Force Sim.\n• No user will be penalized.\n• This applies only when both parties are responsive.\n• Commissioner discretion applies.",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 10,
+      "id": "advance_timing",
+      "title": "Advance Timing & Extra-Day Policy",
+      "aliases": [
+        "advancetiming",
+        "advance",
+        "extraday",
+        "extra-day",
+        "5pm"
+      ],
+      "active": true,
+      "content": "League advances are targeted around ~5:00 PM AZ.\n• A short delay past the target time is acceptable.\n• Games starting multiple hours after the target advance time risk delaying the league.\n• Starting late is done at the users’ risk.\n\n**EXTRA-DAY ADJUSTMENT**\nIf the final game of a cycle finishes very late, such as 9–11 PM AZ, the league may advance the following morning so all users receive an extra day before the next advance.\n📌 This prevents lost preparation time for the league and keeps advance cycles fair.",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 11,
+      "id": "trading",
+      "title": "Trading Rules",
+      "aliases": [
+        "trade",
+        "trades",
+        "trading",
+        "p2p",
+        "otb",
+        "tradeblock"
+      ],
+      "active": true,
+      "content": "🔒 All trades require Commissioner approval.\n\n**P2P Trades**\n• Users agree\n• Submit to Commissioner for approval\n\n**OTB Trades**\n• Player must be on the trade block\n• CPU teams require screenshot and approval\n• ❌ No extra CPU players added",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": 12,
+      "id": "commissioner_protection",
+      "title": "Commissioner Protection & Finality",
+      "aliases": [
+        "commissioner",
+        "commissioners",
+        "rulings",
+        "finality",
+        "discipline"
+      ],
+      "active": true,
+      "content": "Commissioners may take immediate protective action during disputes, disconnects, or exits, including:\n• Removing user team control\n• Assigning team to CPU\n• Restricting trades or roster moves\n• Reverting roster changes\n\n📌 Auto-Pilot may be used but is not relied on alone.\n📌 All Commissioner rulings are final. No negotiations after a ruling has been made.\n\nRefusal to comply, repeated arguing after a final ruling, or disrespect toward Commissioners may result in FWs, FLs, restricted control, removal from team control, or removal from the league.\n\n🏈 Play fair. Stay active. Respect the league. 🏈",
+      "source": "BILLS 1X🏆 [CC] (rainfall) AZ — 5/21/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null
+    },
+    {
+      "number": null,
+      "id": "quit_onside_amendment",
+      "title": "Quit / Onside-Kick Amendment",
+      "aliases": [
+        "quit",
+        "quitting",
+        "onside",
+        "onsidekick",
+        "penalty",
+        "draftpick"
+      ],
+      "active": false,
+      "content": "NEW RULE AMEND\n\nPLAYERS WHO; Quit & On side kick will forfeit a draft pick to their opponent (commish discretion as to what pick). If its in the playoffs, removal.",
+      "source": "CHIEFS 6X🏆 [C] AZ — 6/22/26",
+      "discord_message_id": null,
+      "updated_by": null,
+      "updated_at": null,
+      "merged_into": "core_rules",
+      "deactivated_reason": "Clarified by commissioner and merged into Rule 2 (Core Rules) so the live rulebook has one authoritative quitting/onside-kick rule.",
+      "former_number": 13
+    }
+  ],
+  "rules_channel_id": null,
+  "index_message_id": null,
+  "sync_enabled": false,
+  "audit_log": []
+}

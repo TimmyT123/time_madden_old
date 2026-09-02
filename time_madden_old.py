@@ -1001,6 +1001,10 @@ bot = commands.Bot(
 async def help_command(ctx):
     help_text = """🏈 **WURD Bot Commands**
 
+**!rules [number or topic]**
+Shows the WURD league rules.
+Examples: `!rules`, `!rules 6`, `!rules ap`, `!rules trades`
+
 **!available_teams**
 Shows all teams that are currently available.
 
@@ -1008,12 +1012,28 @@ Shows all teams that are currently available.
 Saves your normal Madden availability and updates your matchup forum(s).
 Example: `!playtime Weeknights after 7 PM, weekends open`
 
-**!rules [number or topic]**
-Shows the WURD league rules.
-Examples: `!rules`, `!rules 6`, `!rules ap`, `!rules trades`
+**!advance**
+Shows the current league stage and the scheduled next advance.
 
-**time**
-Type `time` by itself (no `!`) to receive the current PT, AZ, MT, CT, and ET times by DM.
+**!team <team>**
+Shows a team scouting report with record, OVR, rankings, owner, opponent, and top players.
+Examples: `!team Bills`, `!team BUF`, `!team Buffalo`
+
+**!coinflip**
+Flips the WURD coin. Heads = YES. Tails = NO.
+
+**!powerrankings**
+Shows the current WURD Top 10 power rankings.
+
+**!leaders**
+Shows the current league leaders in passing, rushing, receiving, sacks, and interceptions.
+
+**!stream [team]**
+Shows your saved stream, or another team's stream.
+Examples: `!stream`, `!stream Chiefs`
+
+**!time**
+Shows PT, AZ, MT, CT, and ET publicly in the channel where the command is used.
 """
 
     # Show the command list in the channel where !help was requested so
@@ -4249,6 +4269,821 @@ def update_streamers_json_from_message(msg, url: str) -> bool:
     logger.info(f"[STREAMERS] Added {streamer_name} → {team}")
     return True
 
+
+# ===============================
+# PUBLIC WURD LEAGUE COMMANDS
+# ===============================
+
+# Friendly personality lines are intentionally selected from fixed text.
+# League facts always come from the real WURD/Madden data files.
+WURD_COMMAND_PERSONALITY = {
+    "advance": [
+        "If the games finish early, you know the deal — WURD might keep it moving. 🏈",
+        "Handle business before the clock does. 😏",
+        "The advance waits for nobody... well, almost nobody. 😂",
+    ],
+    "coin_heads": [
+        "The coin has spoken. Don't blame me. 😂",
+        "That's a YES. WURD has ruled. 😎",
+        "Heads it is. Make it happen. 🏈",
+    ],
+    "coin_tails": [
+        "That's a NO. Take it up with the coin. 😏",
+        "Tails says nope. I just work here. 😂",
+        "The WURD coin shut that down. ❌",
+    ],
+    "power": [
+        "Don't like your ranking? Win. 😎",
+        "Keep winning and the numbers will take care of themselves. 🏈",
+        "Rankings are for fun. Bragging rights are very real. 😏",
+    ],
+    "leaders": [
+        "Somebody better slow these dudes down. 😏",
+        "The stat sheet doesn't lie. 🏆",
+        "These are the names everybody is chasing right now. 🔥",
+    ],
+    "stream": [
+        "Lights. Camera. Madden. 🎥",
+        "If you're going live, give the league something to watch. 🍿",
+        "Broadcast it. Let everybody see what happened. 😏",
+    ],
+    "time": [
+        "No timezone excuses now. 😂",
+        "WURD time check complete. ⏰",
+        "Arizona still refuses to play the daylight-saving game. 😎",
+    ],
+}
+
+
+def _wurd_line(category: str) -> str:
+    choices = WURD_COMMAND_PERSONALITY.get(category) or []
+    return random.choice(choices) if choices else ""
+
+
+def _safe_int(value, default=None):
+    try:
+        if value is None or str(value).strip() == "":
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _safe_float(value, default=None):
+    try:
+        if value is None or str(value).strip() == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _first_value(mapping: dict | None, *keys, default=None):
+    if not isinstance(mapping, dict):
+        return default
+    for key in keys:
+        if key in mapping and mapping.get(key) not in (None, ""):
+            return mapping.get(key)
+    return default
+
+
+def _load_json_quiet(path: str, default=None):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def _extract_rows(data, *keys) -> list:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in keys:
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _latest_upload_context() -> dict:
+    """Return latest {league, season, week} from the shared Madden uploads."""
+    latest_path = os.path.join(MADDEN_UPLOADS_DIR, "_latest.json")
+    latest = _load_json_quiet(latest_path, {}) or {}
+
+    league = str(latest.get("league") or get_latest_league_id() or DEFAULT_LEAGUE_ID)
+    season = str(latest.get("season") or "")
+    week = str(latest.get("week") or "")
+
+    # Fallback: the current bot state is enough to derive a period name.
+    if not week:
+        st = _load_week_state()
+        try:
+            wk = int(st.get("week", 0))
+        except Exception:
+            wk = 0
+
+        if wk in (-3, -2, -1):
+            week = f"pre_{wk + 4}"
+        elif wk == -4:
+            week = "pre_4"
+        elif wk > 0:
+            week = f"week_{wk}"
+
+    return {"league": league, "season": season, "week": week}
+
+
+def _madden_global_dir(league_id: str) -> str:
+    return os.path.join(
+        MADDEN_UPLOADS_DIR,
+        str(league_id),
+        "season_global",
+        "week_global",
+    )
+
+
+def _team_query_normalize(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").casefold())
+
+
+# User-friendly aliases so city names and common abbreviations work even if the
+# Companion team_map only stores the franchise nickname.
+NFL_TEAM_QUERY_ALIASES = {
+    "ari": "cardinals", "arizona": "cardinals", "arizonacardinals": "cardinals",
+    "atl": "falcons", "atlanta": "falcons", "atlantafalcons": "falcons",
+    "bal": "ravens", "baltimore": "ravens", "baltimoreravens": "ravens",
+    "buf": "bills", "buffalo": "bills", "buffalobills": "bills",
+    "car": "panthers", "carolina": "panthers", "carolinapanthers": "panthers",
+    "chi": "bears", "chicago": "bears", "chicagobears": "bears",
+    "cin": "bengals", "cincinnati": "bengals", "cincinnatibengals": "bengals",
+    "cle": "browns", "cleveland": "browns", "clevelandbrowns": "browns",
+    "dal": "cowboys", "dallas": "cowboys", "dallascowboys": "cowboys",
+    "den": "broncos", "denver": "broncos", "denverbroncos": "broncos",
+    "det": "lions", "detroit": "lions", "detroitlions": "lions",
+    "gb": "packers", "gnb": "packers", "greenbay": "packers", "greenbaypackers": "packers",
+    "hou": "texans", "houston": "texans", "houstontexans": "texans",
+    "ind": "colts", "indianapolis": "colts", "indianapoliscolts": "colts",
+    "jax": "jaguars", "jac": "jaguars", "jacksonville": "jaguars", "jacksonvillejaguars": "jaguars",
+    "kc": "chiefs", "kan": "chiefs", "kansascity": "chiefs", "kansascitychiefs": "chiefs",
+    "lv": "raiders", "lvr": "raiders", "lasvegas": "raiders", "lasvegasraiders": "raiders",
+    "lac": "chargers", "losangeleschargers": "chargers",
+    "lar": "rams", "losangelesrams": "rams",
+    "mia": "dolphins", "miami": "dolphins", "miamidolphins": "dolphins",
+    "min": "vikings", "minnesota": "vikings", "minnesotavikings": "vikings",
+    "ne": "patriots", "nwe": "patriots", "newengland": "patriots", "newenglandpatriots": "patriots",
+    "no": "saints", "nor": "saints", "neworleans": "saints", "neworleanssaints": "saints",
+    "nyg": "giants", "newyorkgiants": "giants",
+    "nyj": "jets", "newyorkjets": "jets",
+    "phi": "eagles", "philadelphia": "eagles", "philadelphiaeagles": "eagles",
+    "pit": "steelers", "pittsburgh": "steelers", "pittsburghsteelers": "steelers",
+    "sf": "49ers", "sfo": "49ers", "sanfrancisco": "49ers", "sanfrancisco49ers": "49ers", "niners": "49ers",
+    "sea": "seahawks", "seattle": "seahawks", "seattleseahawks": "seahawks",
+    "tb": "buccaneers", "tam": "buccaneers", "tampabay": "buccaneers", "tampabaybuccaneers": "buccaneers", "bucs": "buccaneers",
+    "ten": "titans", "tennessee": "titans", "tennesseetitans": "titans",
+    "was": "commanders", "wsh": "commanders", "washington": "commanders", "washingtoncommanders": "commanders",
+}
+
+
+def _load_team_map_for_league(league_id: str) -> dict:
+    path = os.path.join(MADDEN_UPLOADS_DIR, str(league_id), "team_map.json")
+    data = _load_json_quiet(path, {}) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _resolve_team_query(query: str, league_id: str):
+    """
+    Return (team_id, team_info, display_name) from team_map.json.
+    Supports franchise name, city, full name, and common abbreviation.
+    """
+    raw_key = _team_query_normalize(query)
+    if not raw_key:
+        return None, None, None
+
+    wanted = NFL_TEAM_QUERY_ALIASES.get(raw_key, raw_key)
+    team_map = _load_team_map_for_league(league_id)
+
+    # First pass: exact match against likely team-map fields.
+    for team_id, info in team_map.items():
+        info = info if isinstance(info, dict) else {}
+        candidates = {
+            _team_query_normalize(str(_first_value(
+                info, "name", "teamName", "nickName", "nickname", default=""
+            ))),
+            _team_query_normalize(str(_first_value(
+                info, "abbr", "teamAbbr", "teamAbbrev", "abbreviation", default=""
+            ))),
+            _team_query_normalize(str(_first_value(
+                info, "city", "cityName", "location", default=""
+            ))),
+            _team_query_normalize(str(_first_value(
+                info, "displayName", "fullName", default=""
+            ))),
+        }
+        candidates.discard("")
+        normalized_candidates = {NFL_TEAM_QUERY_ALIASES.get(c, c) for c in candidates}
+        if raw_key in candidates or wanted in normalized_candidates or wanted in candidates:
+            display = _first_value(info, "name", "teamName", "nickName", "displayName", default=str(query).title())
+            return str(team_id), info, str(display)
+
+    # Fallback to /api/teams if team_map is unavailable or incomplete.
+    try:
+        response = requests.get(f"{API_BASE_URL}/teams", timeout=5)
+        response.raise_for_status()
+        teams_data = response.json()
+        if isinstance(teams_data, list):
+            for team in teams_data:
+                if not isinstance(team, dict):
+                    continue
+                fields = [
+                    _first_value(team, "name", "teamName", "displayName", default=""),
+                    _first_value(team, "abbr", "teamAbbr", "teamAbbrev", default=""),
+                ]
+                candidate_keys = {_team_query_normalize(str(v)) for v in fields if v}
+                normalized_candidates = {NFL_TEAM_QUERY_ALIASES.get(c, c) for c in candidate_keys}
+                if raw_key in candidate_keys or wanted in normalized_candidates or wanted in candidate_keys:
+                    tid = str(_first_value(team, "teamId", "id", default=""))
+                    display = str(_first_value(team, "name", "teamName", "displayName", default=query.title()))
+                    return tid or None, team, display
+    except Exception as e:
+        logger.warning("!team fallback /api/teams lookup failed: %s", e)
+
+    return None, None, None
+
+
+def _team_owner_name(team_id: str, team_name: str, info: dict, guild) -> str:
+    owner = _first_value(
+        info,
+        "userName", "ownerName", "displayName", "user",
+        default=None,
+    )
+    if owner and str(owner).strip().casefold() not in {"cpu", "none", "unknown"}:
+        return str(owner)
+
+    # Discord nicknames are the live source for which WURD member controls a team.
+    if guild:
+        wanted = _team_query_normalize(team_name)
+        for member in guild.members:
+            if getattr(member, "bot", False):
+                continue
+            member_team = extract_team_from_nick(member.display_name or "")
+            if member_team and _team_query_normalize(member_team) == wanted:
+                return member.display_name
+
+    return "CPU"
+
+
+def _load_team_standing_row(league_id: str, team_id: str) -> dict:
+    base = _madden_global_dir(league_id)
+
+    raw_data = _load_json_quiet(os.path.join(base, "standings.json"), {})
+    parsed_data = _load_json_quiet(os.path.join(base, "parsed_standings.json"), {})
+
+    raw_rows = _extract_rows(
+        raw_data,
+        "teamStandingInfoList", "standings", "teams", "items",
+    )
+    parsed_rows = _extract_rows(
+        parsed_data,
+        "standings", "teamStandingInfoList", "teams", "items",
+    )
+
+    def match(rows):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            tid = str(_first_value(row, "teamId", "id", default=""))
+            if tid == str(team_id):
+                return row
+        return {}
+
+    raw = match(raw_rows)
+    parsed = match(parsed_rows)
+
+    # Raw contains the deeper yardage/rank fields; parsed often has cleaner W/L.
+    return {**raw, **parsed}
+
+
+def _load_team_ovr(league_id: str, team_id: str):
+    path = os.path.join(_madden_global_dir(league_id), "parsed_league_info.json")
+    data = _load_json_quiet(path, {}) or {}
+    teams = _extract_rows(data, "leagueTeamInfoList", "teamInfoList", "teams")
+
+    for team in teams:
+        if not isinstance(team, dict):
+            continue
+        tid = str(_first_value(team, "teamId", "id", default=""))
+        if tid == str(team_id):
+            return _first_value(team, "teamOvr", "teamOverall", "ovr", "overall", default=None)
+    return None
+
+
+def _player_name(row: dict) -> str:
+    name = _first_value(row, "playerName", "fullName", "name", default=None)
+    if name:
+        return str(name)
+    first = str(_first_value(row, "firstName", "first_name", default="") or "").strip()
+    last = str(_first_value(row, "lastName", "last_name", default="") or "").strip()
+    return f"{first} {last}".strip() or "Unknown"
+
+
+def _load_top_players_for_team(league_id: str, team_id: str, limit: int = 3) -> list[dict]:
+    base = _madden_global_dir(league_id)
+    roster_path = None
+    for name in ("parsed_rosters.json", "rosters.json"):
+        candidate = os.path.join(base, name)
+        if os.path.exists(candidate):
+            roster_path = candidate
+            break
+
+    if not roster_path:
+        return []
+
+    data = _load_json_quiet(roster_path, [])
+    players = _extract_rows(data, "rosterInfoList", "players", "items")
+
+    output = []
+    for player in players:
+        if not isinstance(player, dict):
+            continue
+        raw = player.get("_raw") if isinstance(player.get("_raw"), dict) else {}
+        pid_team = str(
+            _first_value(player, "teamId", "teamID", "team", default="")
+            or _first_value(raw, "teamId", "teamID", "team", default="")
+        )
+        if pid_team != str(team_id):
+            continue
+
+        ovr = _first_value(
+            player,
+            "overallRating", "ovr", "overall", "playerBestOvr", "playerSchemeOvr",
+            default=None,
+        )
+        if ovr is None:
+            ovr = _first_value(
+                raw,
+                "overallRating", "ovr", "overall", "playerBestOvr", "playerSchemeOvr",
+                default=0,
+            )
+
+        pos = _first_value(player, "position", "pos", default=None)
+        if pos is None:
+            pos = _first_value(raw, "position", "pos", default="")
+
+        name = _player_name(player)
+        if name == "Unknown" and raw:
+            name = _player_name(raw)
+
+        output.append({
+            "name": name,
+            "pos": str(pos or ""),
+            "ovr": _safe_int(ovr, 0) or 0,
+        })
+
+    output.sort(key=lambda p: p["ovr"], reverse=True)
+    return output[:limit]
+
+
+def _find_power_ranking_for_team(team_id: str, team_name: str):
+    data = load_power_rankings()
+    if not data:
+        return None, False
+
+    rankings = data.get("rankings", []) if isinstance(data, dict) else []
+    target_name = _team_query_normalize(team_name)
+
+    for row in rankings:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("team_id") or "") == str(team_id):
+            return row, True
+        if _team_query_normalize(str(row.get("team") or "")) == target_name:
+            return row, True
+
+    return None, True
+
+
+def _format_record(row: dict) -> str:
+    wins = _safe_int(_first_value(row, "wins", "overallWins", "totalWins", default=0), 0)
+    losses = _safe_int(_first_value(row, "losses", "overallLosses", "totalLosses", default=0), 0)
+    ties = _safe_int(_first_value(row, "ties", "overallTies", "totalTies", default=0), 0)
+    return f"{wins}-{losses}" if not ties else f"{wins}-{losses}-{ties}"
+
+
+def _rank_text(value) -> str:
+    rank = _safe_int(value, None)
+    return f"#{rank}" if rank and rank > 0 else "—"
+
+
+def _team_personality(off_rank, def_rank) -> str:
+    off_rank = _safe_int(off_rank, None)
+    def_rank = _safe_int(def_rank, None)
+
+    if off_rank and def_rank and off_rank <= 5 and def_rank <= 5:
+        return "WURD Bot: *Top-5 on both sides? That's a problem. 😏*"
+    if off_rank and def_rank and off_rank <= 5 and def_rank >= 20:
+        return "WURD Bot: *They can score. You might want to bring points. 😂*"
+    if off_rank and def_rank and def_rank <= 5 and off_rank >= 20:
+        return "WURD Bot: *That defense is doing some heavy lifting. 🧱*"
+    return random.choice([
+        "WURD Bot: *Numbers are nice. Now go prove it on the field. 🏈*",
+        "WURD Bot: *Scout them now. Complain later. 😎*",
+        "WURD Bot: *There's your scouting report. What you do with it is on you. 😏*",
+    ])
+
+
+def _period_label(period: str) -> str:
+    p = str(period or "").strip().lower()
+    if p.startswith("pre_"):
+        return f"Preseason Week {p.split('_', 1)[1]}"
+    if p.startswith("week_"):
+        num = _safe_int(p.split("_", 1)[1], None)
+        if num == 19:
+            return "Wild Card"
+        if num == 20:
+            return "Divisional Round"
+        if num == 21:
+            return "Conference Championships"
+        if num == 23:
+            return "WURD Bowl"
+        return f"Week {num}" if num is not None else period
+    return period or "Current"
+
+
+def _load_latest_stat_rows(filename: str, *keys) -> tuple[list, dict]:
+    ctx = _latest_upload_context()
+    league = ctx.get("league")
+    season = ctx.get("season")
+    week = ctx.get("week")
+    if not all([league, season, week]):
+        return [], ctx
+
+    path = os.path.join(MADDEN_UPLOADS_DIR, league, season, week, filename)
+    data = _load_json_quiet(path, None)
+    return _extract_rows(data, *keys), ctx
+
+
+def _team_name_from_id(team_id, team_map: dict) -> str:
+    info = team_map.get(str(team_id), {}) if isinstance(team_map, dict) else {}
+    return str(_first_value(info, "name", "teamName", "displayName", default="Unknown"))
+
+
+def _leader_entry(rows: list, stat_keys: tuple[str, ...], team_map: dict, label: str):
+    best = None
+    best_value = None
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        value = _first_value(row, *stat_keys, default=None)
+        number = _safe_float(value, None)
+        if number is None:
+            continue
+        if best is None or number > best_value:
+            best = row
+            best_value = number
+
+    if best is None:
+        return None
+
+    team = _team_name_from_id(_first_value(best, "teamId", "teamID", default=""), team_map)
+    name = _player_name(best)
+
+    if isinstance(best_value, float) and not best_value.is_integer():
+        pretty_value = f"{best_value:g}"
+    else:
+        pretty_value = f"{int(best_value):,}"
+
+    return {
+        "label": label,
+        "name": name,
+        "team": team,
+        "value": pretty_value,
+    }
+
+
+@bot.command(name="time")
+async def time_command(ctx):
+    pt_time, az_time, mtn_time, central_time, eastern_time = get_time_zones()
+
+    def fmt(dt, suffix):
+        return f"{dt.strftime('%I:%M %p').lstrip('0')} {suffix}"
+
+    message = (
+        "🕐 **WURD Time Check**\n\n"
+        f"**PT:** {fmt(pt_time, 'PT')}\n"
+        f"**AZ:** {fmt(az_time, 'AZ')} ← WURD server time\n"
+        f"**MT:** {fmt(mtn_time, 'MT')}\n"
+        f"**CT:** {fmt(central_time, 'CT')}\n"
+        f"**ET:** {fmt(eastern_time, 'ET')}\n\n"
+        f"{_wurd_line('time')}"
+    )
+    await ctx.send(message, allowed_mentions=AllowedMentions.none())
+
+
+@bot.command(name="advance")
+async def advance_command(ctx):
+    info = _load_scheduled_advance_info()
+    state = _load_week_state()
+
+    if info:
+        current_week = info.get("current_week", info.get("week"))
+        advance_to = info.get("advance_to_week", _next_advance_week(current_week))
+        try:
+            advance_dt = _parse_scheduled_advance(info["advance_time_iso"])
+            scheduled = _format_advance_date(advance_dt)
+        except Exception:
+            scheduled = info.get("advance_display") or info.get("status_text") or "Not scheduled yet"
+
+        lines_out = [
+            "⏰ **WURD Advance**",
+            "",
+            f"**Current:** {_advance_week_label(current_week)}",
+            f"**Next:** {_advance_week_label(advance_to)}",
+            f"**Scheduled:** {scheduled}",
+            "",
+            _wurd_line("advance"),
+        ]
+    else:
+        current_week = state.get("week", 0)
+        lines_out = [
+            "⏰ **WURD Advance**",
+            "",
+            f"**Current:** {_advance_week_label(current_week) if current_week else 'Not loaded yet'}",
+            "**Next advance:** I don't have a scheduled advance time yet.",
+            "",
+            "WURD Bot: *As soon as the commissioners set it, I'll know. 🏈*",
+        ]
+
+    await ctx.send("\n".join(lines_out), allowed_mentions=AllowedMentions.none())
+
+
+@bot.command(name="coinflip")
+async def coinflip_command(ctx):
+    result = random.choice(("HEADS", "TAILS"))
+    if result == "HEADS":
+        answer = "YES ✅"
+        personality = _wurd_line("coin_heads")
+    else:
+        answer = "NO ❌"
+        personality = _wurd_line("coin_tails")
+
+    await ctx.send(
+        "🪙 *WURD Bot flips the coin...*\n\n"
+        f"## **{result} — {answer}**\n\n"
+        f"{personality}",
+        allowed_mentions=AllowedMentions.none(),
+    )
+
+
+@bot.command(name="powerrankings", aliases=["power_rankings", "power"])
+async def power_rankings_command(ctx):
+    data = load_power_rankings()
+
+    if not data or not data.get("rankings"):
+        await ctx.send(
+            "🏈 **WURD Power Rankings**\n\n"
+            "Not yet. We need some games on the books first. 😏\n"
+            "Check back after the season gets rolling.",
+            allowed_mentions=AllowedMentions.none(),
+        )
+        return
+
+    message = format_power_rankings_message(data)
+    if not message:
+        await ctx.send(
+            "🏈 **WURD Power Rankings**\n\n"
+            "I don't have enough ranking data yet. Check back after more games are played.",
+            allowed_mentions=AllowedMentions.none(),
+        )
+        return
+
+    await ctx.send(
+        f"{message}\n\n*WURD Bot:* {_wurd_line('power')}",
+        allowed_mentions=AllowedMentions.none(),
+    )
+
+
+@bot.command(name="team")
+async def team_command(ctx, *, team_query: str = ""):
+    team_query = (team_query or "").strip()
+    if not team_query:
+        await ctx.send(
+            "🏈 Tell me which team to scout.\n"
+            "Example: `!team Bills`, `!team BUF`, or `!team Buffalo`.",
+            allowed_mentions=AllowedMentions.none(),
+        )
+        return
+
+    latest = _latest_upload_context()
+    league_id = latest.get("league") or get_latest_league_id()
+
+    team_id, team_info, team_name = _resolve_team_query(team_query, league_id)
+    if not team_id:
+        await ctx.send(
+            f"🤔 I couldn't find a WURD team matching **{team_query}**.\n"
+            "Try the team nickname, city, or abbreviation — for example `!team Bills`, `!team Buffalo`, or `!team BUF`.",
+            allowed_mentions=AllowedMentions.none(),
+        )
+        return
+
+    standing = _load_team_standing_row(league_id, team_id)
+    ranking_row, rankings_exist = _find_power_ranking_for_team(team_id, team_name)
+    top_players = _load_top_players_for_team(league_id, team_id, limit=3)
+    guild = ctx.guild or bot.get_guild(GUILD_ID)
+
+    owner = _team_owner_name(team_id, team_name, team_info or {}, guild)
+    record = _format_record(standing)
+
+    ovr = _load_team_ovr(league_id, team_id)
+    if ovr in (None, "") and ranking_row:
+        ovr = ranking_row.get("ovr")
+    ovr_text = str(ovr) if ovr not in (None, "") else "—"
+
+    off_rank = _first_value(
+        standing,
+        "offTotalYdsRank", "offTotalRank", "off_total_rank",
+        default=(ranking_row or {}).get("off_total_rank"),
+    )
+    def_rank = _first_value(
+        standing,
+        "defTotalYdsRank", "defTotalRank", "def_total_rank",
+        default=(ranking_row or {}).get("def_total_rank"),
+    )
+    pf_rank = _first_value(
+        standing,
+        "ptsForRank", "pointsForRank", "pfRank", "pf_rank",
+        default=(ranking_row or {}).get("pf_rank"),
+    )
+    pa_rank = _first_value(
+        standing,
+        "ptsAgainstRank", "pointsAgainstRank", "paRank", "pa_rank",
+        default=(ranking_row or {}).get("pa_rank"),
+    )
+    to_diff = _first_value(
+        standing,
+        "tODiff", "toDiff", "turnoverDiff", "to_diff",
+        default=(ranking_row or {}).get("to_diff"),
+    )
+    to_num = _safe_int(to_diff, None)
+    if to_num is None:
+        to_text = "—"
+    elif to_num > 0:
+        to_text = f"+{to_num}"
+    else:
+        to_text = str(to_num)
+
+    if ranking_row:
+        power_text = f"#{ranking_row.get('rank')}"
+    elif rankings_exist:
+        power_text = "Outside Top 10"
+    else:
+        power_text = "Not available yet"
+
+    current_week, matchups = get_current_week_and_matchups()
+    opponent = opponent_for_team(team_name, matchups)
+    opponent_text = opponent.title() if opponent else "No matchup found"
+
+    out = [
+        f"🏈 **{team_name.upper()} — WURD SCOUTING REPORT**",
+        "",
+        f"**Owner:** {owner}",
+        f"**Record:** {record}",
+        f"**Team OVR:** {ovr_text}",
+        "",
+        f"⚔️ **Offense Rank:** {_rank_text(off_rank)}",
+        f"🛡️ **Defense Rank:** {_rank_text(def_rank)}",
+        f"📈 **Power Ranking:** {power_text}",
+        f"🔥 **Points For Rank:** {_rank_text(pf_rank)}",
+        f"🧱 **Points Against Rank:** {_rank_text(pa_rank)}",
+        f"🔄 **Turnover Differential:** {to_text}",
+        "",
+        f"**Current Opponent:** {opponent_text}",
+    ]
+
+    if top_players:
+        out.extend(["", "⭐ **Top Players**"])
+        for player in top_players:
+            pos = f" {player['pos']}" if player.get("pos") else ""
+            out.append(f"• **{player['name']}** —{pos} {player['ovr']} OVR")
+
+    out.extend(["", _team_personality(off_rank, def_rank)])
+
+    await ctx.send("\n".join(out), allowed_mentions=AllowedMentions.none())
+
+
+@bot.command(name="stream")
+async def stream_command(ctx, *, team_query: str = ""):
+    streamers = load_streamers_json()
+
+    target = None
+    target_team = None
+
+    if team_query.strip():
+        latest = _latest_upload_context()
+        league_id = latest.get("league") or get_latest_league_id()
+        _, _, resolved_name = _resolve_team_query(team_query, league_id)
+        target_team = resolved_name
+
+        if resolved_name:
+            target_norm = _team_query_normalize(resolved_name)
+            for row in streamers:
+                if _team_query_normalize(str(row.get("team") or "")) == target_norm:
+                    target = row
+                    break
+    else:
+        # First choice: exact Discord user.
+        for row in streamers:
+            if str(row.get("discord_id") or "") == str(ctx.author.id):
+                target = row
+                break
+
+        # Fallback: identify the user's current team from their nickname.
+        if target is None:
+            detected = extract_team_from_nick(getattr(ctx.author, "display_name", "") or "")
+            target_team = detected.title() if detected else None
+            if detected:
+                target_norm = _team_query_normalize(detected)
+                for row in streamers:
+                    if _team_query_normalize(str(row.get("team") or "")) == target_norm:
+                        target = row
+                        break
+
+    game_streams_label = f"<#{GAME_STREAMS_CHANNEL_ID}>" if GAME_STREAMS_CHANNEL_ID else "#game-streams"
+
+    if target:
+        team = str(target.get("team") or target_team or "WURD").title()
+        platform = str(target.get("platform") or "stream").title()
+        url = str(target.get("url") or "").strip()
+        await ctx.send(
+            f"📺 **{team} WURD Stream**\n\n"
+            f"**{platform}:** <{url}>\n\n"
+            f"Going live? Post your stream in {game_streams_label} so everybody can find the game.\n\n"
+            f"*WURD Bot:* {_wurd_line('stream')}",
+            allowed_mentions=AllowedMentions.none(),
+        )
+        return
+
+    who = f"**{target_team}**" if target_team else "you"
+    await ctx.send(
+        f"📺 I don't have a saved stream for {who} yet.\n\n"
+        f"Post a Twitch or YouTube stream link in {game_streams_label} and I'll learn it.",
+        allowed_mentions=AllowedMentions.none(),
+    )
+
+
+@bot.command(name="leaders")
+async def leaders_command(ctx):
+    latest = _latest_upload_context()
+    league = latest.get("league")
+    team_map = _load_team_map_for_league(league) if league else {}
+
+    passing, pass_ctx = _load_latest_stat_rows("passing.json", "playerPassingStatInfoList", "players", "items")
+    rushing, rush_ctx = _load_latest_stat_rows("parsed_rushing.json", "playerRushingStatInfoList", "players", "items")
+    receiving, rec_ctx = _load_latest_stat_rows("receiving.json", "playerReceivingStatInfoList", "players", "items")
+    defense, def_ctx = _load_latest_stat_rows("parsed_defense.json", "playerDefensiveStatInfoList", "players", "items")
+
+    # Some leagues may only have the raw defensive export.
+    if not defense and all([latest.get("league"), latest.get("season"), latest.get("week")]):
+        raw_path = os.path.join(
+            MADDEN_UPLOADS_DIR,
+            latest["league"],
+            latest["season"],
+            latest["week"],
+            "defense.json",
+        )
+        raw_def = _load_json_quiet(raw_path, {})
+        defense = _extract_rows(raw_def, "playerDefensiveStatInfoList", "players", "items")
+
+    entries = [
+        _leader_entry(passing, ("passYds", "passingYds", "yards"), team_map, "🏈 Passing Yards"),
+        _leader_entry(rushing, ("rushYds", "rushingYds", "yards", "yds"), team_map, "🏃 Rushing Yards"),
+        _leader_entry(receiving, ("recYds", "receivingYds", "yards", "yds"), team_map, "👐 Receiving Yards"),
+        _leader_entry(defense, ("sacks", "defSacks", "sack"), team_map, "💥 Sacks"),
+        _leader_entry(defense, ("ints", "interceptions", "defInts", "int"), team_map, "🛡️ Interceptions"),
+    ]
+    entries = [entry for entry in entries if entry]
+
+    if not entries:
+        await ctx.send(
+            "🏆 **WURD League Leaders**\n\n"
+            "I don't have player stat leaders yet. We need some Madden stats on the books first. 🏈",
+            allowed_mentions=AllowedMentions.none(),
+        )
+        return
+
+    label = _period_label(latest.get("week"))
+    out = [f"🏆 **WURD League Leaders — {label}**", ""]
+
+    for entry in entries:
+        out.append(f"**{entry['label']}**")
+        out.append(f"• **{entry['name']}** — {entry['team']} — {entry['value']}")
+        out.append("")
+
+    out.append(f"*WURD Bot:* {_wurd_line('leaders')}")
+    await ctx.send("\n".join(out), allowed_mentions=AllowedMentions.none())
+
+
+
 ### THIS IS A DEBUGGING COMMAND TEMP
 @bot.command(name="debug_advance")
 @commands.has_role(ADMIN_ROLE_NAME)
@@ -4743,15 +5578,6 @@ async def on_message(msg):
     # --- end text-channel flyer trigger -----------------------------------------
 
     # PUT ONE WORD COMMANDS AFTER THIS STATEMENT THAT EVERYONE CAN USE
-
-    # Display current times in various time zones if message contains "time"
-    if is_exact_word(msg_text, 'time'):
-        pt_time, az_time, mtn_time, central_time, eastern_time = get_time_zones()
-        await msg.author.send(f'{pt_time.strftime("%I:%M %p-PT")}')
-        await msg.author.send(f'{az_time.strftime("%I:%M %p-AZ")} <- server time (No DST)')
-        await msg.author.send(f'{mtn_time.strftime("%I:%M %p-MT")}')
-        await msg.author.send(f'{central_time.strftime("%I:%M %p-CT")}')
-        await msg.author.send(f'{eastern_time.strftime("%I:%M %p-ET")}')
 
     # ===== GG DETECTOR (category + text channels) =====
     try:

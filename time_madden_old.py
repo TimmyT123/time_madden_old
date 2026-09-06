@@ -109,6 +109,8 @@ personality_loop_started = False
 
 GG_WORD_RE = re.compile(r"\bggs?\b", re.IGNORECASE)
 
+DEFAULT_LEAGUE_ID = os.getenv("DEFAULT_LEAGUE_ID", "1886931")
+
 # Use YOUR provided IDs from .env (see sample below)
 GG_GUILD_ID = int(os.getenv("GG_GUILD_ID", "0") or 0)
 GG_CATEGORY_ID = int(os.getenv("GG_CATEGORY_ID", "0") or 0)  # category that holds your game threads/channels
@@ -119,7 +121,7 @@ GAME_STREAMS_FORUM_ID = int(os.getenv("GAME_STREAMS_FORUM_ID", "0") or 0)
 GAME_STREAMS_CHANNEL_ID = int(os.getenv("GAME_STREAMS_CHANNEL_ID", "0") or 0)
 STREAMERS_JSON_PATH = os.getenv(
     "STREAMERS_JSON_PATH",
-    "/home/pi/projects/madden_flask_app/uploads/26969931/streamers.json"
+    f"/home/pi/projects/madden_flask_app/uploads/{DEFAULT_LEAGUE_ID}/streamers.json"
 )
 LOGOS_DIR = os.getenv("LOGOS_DIR", "flyers/assets/logos")
 FLYER_OUT_DIR = os.getenv("FLYER_OUT_DIR", "./static/flyers")
@@ -4053,8 +4055,6 @@ MADDEN_UPLOADS_DIR = os.getenv(
     "/home/pi/projects/madden_flask_app/uploads"
 )
 
-DEFAULT_LEAGUE_ID = os.getenv("DEFAULT_LEAGUE_ID", "26969931")
-
 
 def get_latest_league_id():
     latest_path = os.path.join(MADDEN_UPLOADS_DIR, "_latest.json")
@@ -5822,7 +5822,7 @@ async def on_message(msg):
                         "There are **no User-vs-User games** this week.\n"
                         "Game scheduling channels have been cleared.\n\n"
                         "🌟 **Top Rookie Preseason Stats** are now available on the WURD website.\n"
-                        "https://wurd-madden.com/rookies?league=26969931&season=season_0\n\n"
+                        f"https://wurd-madden.com/rookies?league={DEFAULT_LEAGUE_ID}&season=season_0\n\n"
                         "⏰ **Advance Time**\n"
                         "The league is scheduled to advance on\n"
                         f"**{advance.strftime('%A, %b %d @ ~%I:%M %p')} AZ**\n"

@@ -107,7 +107,10 @@ startup_loops_started = False
 members_synced_on_startup = False
 personality_loop_started = False
 
-GG_WORD_RE = re.compile(r"\bggs?\b", re.IGNORECASE)
+GG_WORD_RE = re.compile(
+    r"\b(?:ggs?|good\s+game|great\s+game)\b",
+    re.IGNORECASE
+)
 
 DEFAULT_LEAGUE_ID = os.getenv("DEFAULT_LEAGUE_ID", "1886931")
 

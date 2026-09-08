@@ -57,6 +57,9 @@ token = os.getenv('DISCORD_BOT_TOKEN')
 GUILD_ID = int(os.getenv("GUILD_ID"))  # WURD_CHAMPIONSHIPS
 CATEGORY_ID = int(os.getenv("CATEGORY_ID"))  # Text Channels
 ADMIN_ROLE_NAME = 'Admin'  # Admin role name
+GAME_CHANNEL_COMMISSIONER_ROLE_NAME = os.getenv(
+    "GAME_CHANNEL_COMMISSIONER_ROLE_NAME", "Commissioner"
+).strip() or "Commissioner"
 # AUTHORIZED_USERS stored as comma-separated string -> convert to list of ints
 AUTHORIZED_USERS = [int(uid.strip()) for uid in os.getenv("AUTHORIZED_USERS", "").split(",") if uid.strip()]  # Bernard and me
 
@@ -2262,11 +2265,30 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
             print(f"Admin role '{ADMIN_ROLE_NAME}' not found.")
         return
 
+    commissioner_role = nextcord.utils.get(
+        guild.roles,
+        name=GAME_CHANNEL_COMMISSIONER_ROLE_NAME
+    )
+
     overwrites = {
         guild.default_role: nextcord.PermissionOverwrite(read_messages=False),
         guild.me: nextcord.PermissionOverwrite(read_messages=True, send_messages=True),
         admin_role: nextcord.PermissionOverwrite(read_messages=True, send_messages=True)
     }
+
+    # Allow all WURD commissioners to view and participate in every matchup channel.
+    # This is a role overwrite, so commissioners are not added to the matchup
+    # participant tracker, which only tracks explicit member overwrites.
+    if commissioner_role:
+        overwrites[commissioner_role] = nextcord.PermissionOverwrite(
+            read_messages=True,
+            send_messages=True
+        )
+    else:
+        logger.warning(
+            "Commissioner role '%s' not found; creating matchup channel without commissioner access.",
+            GAME_CHANNEL_COMMISSIONER_ROLE_NAME
+        )
 
     member_info = []
     for member_id in member_ids:

@@ -1045,8 +1045,53 @@ Examples: `!stream`, `!stream Chiefs`
 Shows PT, AZ, MT, CT, and ET publicly in the channel where the command is used.
 """
 
-    # Show the command list in the channel where !help was requested so
-    # other users can discover the available WURD commands too.
+    # In a DM, authorized users/commissioners also get private admin help.
+    # Public/channel !help stays unchanged so admin commands are not advertised.
+    if ctx.guild is None:
+        is_help_admin = False
+
+        # AUTHORIZED_USERS works directly in DMs.
+        try:
+            is_help_admin = int(ctx.author.id) in AUTHORIZED_USERS
+        except Exception:
+            pass
+
+        # Also honor the configured Admin role by resolving the sender in WURD.
+        if not is_help_admin:
+            try:
+                guild = bot.get_guild(GUILD_ID)
+                member = guild.get_member(ctx.author.id) if guild else None
+                if member:
+                    is_help_admin = any(
+                        role.name == ADMIN_ROLE_NAME for role in member.roles
+                    )
+            except Exception:
+                pass
+
+        if is_help_admin:
+            admin_help = """
+
+🔒 **WURD Admin Commands**
+*These commands are shown only to admins/authorized users who use `!help` in DM.*
+
+**!logs** — Search the bot message logs.
+
+• `!logs date=YYYY-MM-DD [here]`
+• `!logs forum=bills-panthers [limit=100] [date=YYYY-MM-DD] [here]`
+• `!logs bills-panthers` — shorthand for `forum=`
+• `!logs bills-panthers here`
+• `!logs forum="bills panthers"` — spaces are OK when quoted
+• `!logs user=panthers [limit=50] [date=YYYY-MM-DD] [here]`
+
+**Log notes:**
+• By default, log results are sent by DM.
+• Add `here` to return the results where the command was entered.
+• `limit=` controls how many matching messages are returned.
+"""
+            help_text += admin_help
+
+    # Public help is shown where requested. Authorized DM users receive the
+    # same public help plus the private admin section above.
     await ctx.send(help_text, allowed_mentions=AllowedMentions.none())
 
 

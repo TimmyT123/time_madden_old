@@ -1,3 +1,6 @@
+# VERSION: time_madden_old_v11.py
+# v11 CHANGE: AP CPU/FS/FW eligibility now uses a locked Madden week instead of a calendar date.
+# MODIFIED SECTION: lines 2113-2220 (AP fw_begin_week migration/storage and bulletin display)
 # This file is time_madden_old.py, dev on the windows laptop and automatically runs on the raspberrync
 #!/usr/bin/env python3
 
@@ -2107,16 +2110,84 @@ def human_date(dstr: str) -> str:
     return human_date_from_date(_date_from_str(dstr))
 
 
-def ap_fw_eligible_date(start_dstr: str):
+def _ap_week_after_advances(start_week, advances=3):
+    """Return the league stage reached after a number of advances."""
+    week = start_week
+    for _ in range(advances):
+        week = _next_advance_week(week)
+        if week is None or (isinstance(week, str) and week.upper() == "OFFSEASON"):
+            break
+    return week
+
+
+def _ensure_ap_fw_begin_weeks():
     """
-    First 3 advances are CPU/FS. At 2 days per advance, CPU/FS/FW begins
-    with the fourth advance, 6 days after the AP start date.
+    Lock each AP entry to the league week when CPU/FS/FW begins.
+
+    New/legacy AP entries that do not yet have ``fw_begin_week`` are assigned
+    from the CURRENT league week + 3 advances. Once written, the value does
+    not move forward when the league advances.
     """
-    return _date_from_str(start_dstr) + timedelta(days=6)
+    global _AP_MTIME, _AP_CACHE
+
+    try:
+        with open(AP_FILE, "r", encoding="utf-8") as f:
+            raw_users = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    except Exception as e:
+        logger.warning(f"Could not read {AP_FILE} for AP week migration: {e}")
+        return
+
+    if not isinstance(raw_users, list):
+        return
+
+    try:
+        current_week, _ = get_current_week_and_matchups()
+    except Exception:
+        current_week = 0
+
+    if not current_week:
+        return
+
+    changed = False
+    for u in raw_users:
+        if not isinstance(u, dict):
+            continue
+        if u.get("fw_begin_week") not in (None, ""):
+            continue
+
+        fw_begin_week = _ap_week_after_advances(current_week, 3)
+        if fw_begin_week is None or (isinstance(fw_begin_week, str) and fw_begin_week.upper() == "OFFSEASON"):
+            continue
+
+        u["ap_start_week"] = current_week
+        u["fw_begin_week"] = fw_begin_week
+        changed = True
+
+    if not changed:
+        return
+
+    try:
+        tmp = AP_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(raw_users, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, AP_FILE)
+
+        # Force the normal AP loader to refresh after the migration/write.
+        _AP_MTIME = 0
+        _AP_CACHE = None
+        logger.info(
+            "Locked AP CPU/FS/FW begin weeks using current league week %s.",
+            _advance_week_label(current_week),
+        )
+    except Exception as e:
+        logger.warning(f"Could not save AP begin-week migration: {e}")
 
 
 def render_ap_bulletin():
-    ap_users = sorted(load_ap_users(), key=lambda u: _date_from_str(u["until"]))
+    _ensure_ap_fw_begin_weeks()
+    ap_users = sorted(load_ap_users(force=True), key=lambda u: _date_from_str(u["until"]))
     today_str = datetime.now(_tz(AP_ALERT_TZ)).strftime("%b %d, %Y")
 
     if not ap_users:
@@ -2139,13 +2210,14 @@ def render_ap_bulletin():
 
         if start:
             lines.append(f"  AP started: {human_date(start)}")
-            lines.append(
-                "  CPU/FS/FW begins: "
-                f"{human_date_from_date(ap_fw_eligible_date(start))}"
-            )
         else:
             lines.append("  AP started: Not recorded")
-            lines.append("  CPU/FS/FW begins: Start date required")
+
+        fw_begin_week = u.get("fw_begin_week")
+        if fw_begin_week not in (None, ""):
+            lines.append(f"  CPU/FS/FW begins: {_advance_week_label(fw_begin_week)}")
+        else:
+            lines.append("  CPU/FS/FW begins: Week not available")
 
         lines.append(f"  Returns: {human_date(until)}")
 

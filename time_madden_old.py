@@ -1,8 +1,8 @@
-# VERSION: time_madden_old_v13.py
-# v13 CHANGE: Game-channel AI now waits for the opponent instead of echoing/rephrasing a player's scheduling message.
-# v13 DETAILS: Direct scheduling proposals/questions are deterministically held silent; confirmed exact-time replies are also held silent.
-# v13 SAFETY: The AI may intervene only after the users' exchange actually needs help, and still never decides FW/FS/AP.
-# MODIFIED SECTIONS: AI game-channel scheduling helpers and prompt near the GAME-CHANNEL SCHEDULING ASSISTANT section.
+# VERSION: time_madden_old_v14.py
+# v14 CHANGE: Game-channel AI now gives at most ONE scheduling nudge per matchup/week, primarily on Day 2.
+# v14 DETAILS: Added a Day-2 background watcher so stalled/vague channels can be helped even when nobody sends a new message.
+# v14 SAFETY: Bot stays silent if a specific time is already agreed, never echoes fresh proposals, and never decides FW/FS/AP.
+# MODIFIED SECTIONS: AI game-channel config/helpers, one-and-done nudge logic, Day-2 watcher, and on_ready startup loop.
 # This file is time_madden_old.py, dev on the windows laptop and automatically runs on the raspberrync
 #!/usr/bin/env python3
 
@@ -157,6 +157,9 @@ GAME_AI_GAME_DURATION_MINUTES = int(os.getenv("GAME_AI_GAME_DURATION_MINUTES", "
 # 90 minutes before advance gives roughly 60 minutes to play plus setup/overtime/disconnect room.
 GAME_AI_ADVANCE_BUFFER_MINUTES = int(os.getenv("GAME_AI_ADVANCE_BUFFER_MINUTES", "90") or 90)
 GAME_AI_SCHEDULER_STATE_FILE = "data/game_ai_scheduler_state.json"
+# Day 2 begins about 24 hours before the next advance in WURD's roughly 48-hour advance cycle.
+GAME_AI_DAY2_HOURS_BEFORE_ADVANCE = int(os.getenv("GAME_AI_DAY2_HOURS_BEFORE_ADVANCE", "24") or 24)
+GAME_AI_DAY2_POLL_SECONDS = int(os.getenv("GAME_AI_DAY2_POLL_SECONDS", "600") or 600)
 _game_ai_scheduler_lock = asyncio.Lock()
 
 # ===============================
@@ -2517,54 +2520,94 @@ def _game_ai_is_matchup_channel(msg) -> bool:
     return len(member_ids) == 2
 
 
-async def maybe_send_game_scheduling_ai(msg) -> None:
-    """
-    Quiet-by-default AI scheduling coach for WURD matchup channels.
+async def _game_ai_recent_participant_history(channel, member_ids: list[int], limit: int) -> list[str]:
+    """Recent human matchup conversation only; excludes bot chatter/welcome text."""
+    rows = []
+    try:
+        async for m in channel.history(limit=max(limit * 3, 40), oldest_first=False):
+            if getattr(m.author, "bot", False) or m.author.id not in member_ids:
+                continue
+            content = (m.content or "").strip()
+            if not content:
+                continue
+            author = getattr(m.author, "display_name", getattr(m.author, "name", "Unknown"))
+            stamp = m.created_at.astimezone(pytz.timezone("US/Arizona")).strftime("%a %I:%M %p AZ")
+            rows.append(f"[{stamp}] {author}: {content[:700]}")
+            if len(rows) >= limit:
+                break
+    except Exception as e:
+        logger.warning(f"[GAME AI] participant history read failed in #{getattr(channel, 'name', '?')}: {e}")
+    rows.reverse()
+    return rows
 
-    The AI may nudge vague/stalled scheduling, reject unsafe times near advance,
-    or recognize that a specific time still needs confirmation. It must never
-    award or recommend FW/FS and it never posts unless a strict JSON response
-    explicitly says should_respond=true.
+
+def _game_ai_week_number(info: dict) -> int | None:
+    value = info.get("current_week", info.get("week"))
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _game_ai_nudge_already_sent(ch_state: dict, week: int | None, advance_dt: datetime) -> bool:
+    """Honor v14 week state and conservatively honor a recent v13 post during this cycle."""
+    if week is not None and ch_state.get("nudge_sent_week") == week:
+        return True
+
+    # Migration safety: if v13 already posted in this channel during the current
+    # roughly-48-hour cycle, count that as this matchup's one allowed statement.
+    legacy = ch_state.get("last_sent_at")
+    if legacy and not ch_state.get("nudge_sent_week"):
+        try:
+            dt = datetime.fromisoformat(legacy)
+            az = pytz.timezone("US/Arizona")
+            if dt.tzinfo is None:
+                dt = az.localize(dt)
+            if advance_dt - timedelta(hours=60) <= dt.astimezone(az) <= advance_dt:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+async def _maybe_send_game_scheduling_nudge(channel, trigger_msg=None) -> None:
+    """
+    One-and-done Day-2 scheduling coach.
+
+    The bot may post at most one scheduling statement in a matchup channel for
+    the current week. It reviews player conversation + !playtime + the real
+    advance deadline, and only speaks when scheduling is still unresolved.
     """
     if not GAME_AI_SCHEDULER_ENABLED:
         return
-    if msg.author == bot.user or getattr(msg.author, "bot", False):
-        return
-    if not _game_ai_is_matchup_channel(msg):
-        return
-    if (msg.content or "").lstrip().startswith("!"):
+    if not isinstance(channel, nextcord.TextChannel):
         return
 
-    tracker = channel_activity_tracker.get(msg.channel.id) or {}
+    tracker = channel_activity_tracker.get(channel.id) or {}
     member_ids = list(tracker.get("member_ids", []))
-    if msg.author.id not in member_ids:
-        # Commissioners can still talk in matchup channels, but their messages
-        # should not trigger the scheduling assistant.
+    if len(member_ids) != 2:
         return
 
-    newest_text = (msg.content or "").strip()
-
-    # HARD QUIET RULE: if a player just proposed/asked about a day or time,
-    # let the opponent answer. The bot must never immediately echo/rephrase it.
-    # Example: "Tomorrow at 6 PM AZ good?" or "After MNF still?"
-    if _game_ai_is_player_scheduling_turn(newest_text):
-        logger.info("[GAME AI] Waiting for opponent response in #%s", msg.channel.name)
-        return
-
-    # HARD QUIET RULE: if the newest message is a simple acceptance and the
-    # prior participant message already contained a concrete clock time, the
-    # users just confirmed a valid specific time. No bot congratulations or
-    # repetition is needed.
-    if _GAME_AI_SIMPLE_ACCEPT_RE.match(newest_text):
-        prior = await _game_ai_previous_participant_message(msg, member_ids)
-        if prior and _GAME_AI_EXPLICIT_TIME_RE.search((prior.content or "")):
-            logger.info("[GAME AI] Exact-time agreement reached naturally in #%s; staying silent", msg.channel.name)
+    # If this check was triggered by a player message, do not echo a fresh
+    # scheduling proposal/question. Give the opponent a chance to answer.
+    if trigger_msg is not None:
+        if trigger_msg.author == bot.user or getattr(trigger_msg.author, "bot", False):
             return
+        if trigger_msg.author.id not in member_ids:
+            return
+        if (trigger_msg.content or "").lstrip().startswith("!"):
+            return
+        newest_text = (trigger_msg.content or "").strip()
+        if _game_ai_is_player_scheduling_turn(newest_text):
+            return
+        if _GAME_AI_SIMPLE_ACCEPT_RE.match(newest_text):
+            prior = await _game_ai_previous_participant_message(trigger_msg, member_ids)
+            if prior and _GAME_AI_EXPLICIT_TIME_RE.search((prior.content or "")):
+                # They naturally confirmed a concrete time. No bot statement needed.
+                return
 
-    # The scheduling assistant is not allowed to guess the advance deadline.
     info = _load_scheduled_advance_info()
     if not info or not info.get("advance_time_iso"):
-        logger.info("[GAME AI] No valid advance info; staying silent in #%s", msg.channel.name)
         return
     try:
         advance_dt = _parse_scheduled_advance(info["advance_time_iso"])
@@ -2574,32 +2617,29 @@ async def maybe_send_game_scheduling_ai(msg) -> None:
 
     az = pytz.timezone("US/Arizona")
     now_az = datetime.now(az)
-    safe_cutoff = advance_dt - timedelta(minutes=GAME_AI_ADVANCE_BUFFER_MINUTES)
-
-    # Do not react to messages after the advance itself. At that point the game
-    # result belongs with commissioners, not an automated scheduling coach.
     if now_az >= advance_dt:
         return
 
+    # WURD advances roughly every 48 hours. We intentionally wait until Day 2
+    # (about the final 24 hours) before spending the channel's one bot nudge.
+    day2_start = advance_dt - timedelta(hours=GAME_AI_DAY2_HOURS_BEFORE_ADVANCE)
+    if now_az < day2_start:
+        return
+
+    safe_cutoff = advance_dt - timedelta(minutes=GAME_AI_ADVANCE_BUFFER_MINUTES)
+    week = _game_ai_week_number(info)
+
     async with _game_ai_scheduler_lock:
         state = _load_game_ai_scheduler_state()
-        ch_state = state.get(str(msg.channel.id), {})
-        last_sent_raw = ch_state.get("last_sent_at")
-        if last_sent_raw:
-            try:
-                last_sent = datetime.fromisoformat(last_sent_raw)
-                if last_sent.tzinfo is None:
-                    last_sent = az.localize(last_sent)
-                if now_az - last_sent.astimezone(az) < timedelta(minutes=GAME_AI_SCHEDULER_COOLDOWN_MINUTES):
-                    return
-            except Exception:
-                pass
-
-        history = await _game_ai_recent_history(msg.channel, GAME_AI_SCHEDULER_HISTORY_LIMIT)
-        if not history:
+        ch_state = state.get(str(channel.id), {})
+        if _game_ai_nudge_already_sent(ch_state, week, advance_dt):
             return
 
-        guild = msg.guild
+        history = await _game_ai_recent_participant_history(
+            channel, member_ids, GAME_AI_SCHEDULER_HISTORY_LIMIT
+        )
+
+        guild = channel.guild
         participant_lines = []
         for uid in member_ids:
             member = guild.get_member(uid)
@@ -2617,29 +2657,38 @@ async def maybe_send_game_scheduling_ai(msg) -> None:
             )
 
         safe_status = (
-            "SAFE SCHEDULING WINDOW IS ALREADY CLOSED. You may only tell them there is no longer enough "
-            "buffer to safely schedule a new start before advance and that they should contact a commissioner."
+            "The safe scheduling window is already closed. If scheduling is unresolved, the only useful nudge is to say there is not enough safe time left for a new start before advance and to contact a commissioner."
             if now_az >= safe_cutoff
-            else "Safe scheduling window is still open."
+            else "The safe scheduling window is still open."
         )
 
         prompt = f"""
 You are the WURD Madden league GAME-CHANNEL SCHEDULING ASSISTANT.
 
-Your default action is SILENCE. Only speak when a short intervention is genuinely needed to help the two players reach a specific, mutually confirmed game start before advance. If they are naturally making reasonable progress, joking, talking football, or already have a clear specific time being worked out, stay silent.
+This is a ONE-AND-DONE reminder system. You get at most ONE public scheduling statement in this matchup for the entire week, so spend it only if the players genuinely need help. Your default is SILENCE.
 
-CRITICAL CONVERSATION RULE: NEVER paraphrase, repeat, reinforce, or relay a scheduling question/proposal that a player just sent. The opponent should answer the player directly. You are a coach only when the users get stuck; you are NOT a go-between. If the newest message itself asks the opponent about a day/time, should_respond MUST be false.
+The league is now in Day 2 of an approximately 48-hour advance cycle. Review the players' actual conversation and decide whether they still lack a SPECIFIC, mutually agreed game start time.
 
-WURD scheduling rules for this task:
-1. A game is not scheduled until BOTH players agree to a SPECIFIC date/day and start time.
-2. Vague phrases such as "tomorrow", "later", "hit me up", "sounds good", "I'll let you know", or "after work" are not a confirmed time by themselves.
-3. If one player proposes a specific time, WAIT for the opponent to answer and stay silent. If the opponent clearly accepts that exact time, stay silent; do not congratulate, restate, or announce the confirmation.
-4. Use the players' !playtime availability as context, but live conversation overrides generic availability.
-5. Never suggest or confirm a game start after the safe cutoff.
-6. Never make, recommend, or imply an FW, FS, AP, or commissioner ruling. If the safe window is closed and scheduling is unresolved, simply direct them to contact a commissioner.
-7. Do not scold or threaten. Be concise and practical.
-8. Do not repeat a reminder that the bot has already recently made unless the situation materially changed.
-9. A normal Madden game takes about {GAME_AI_GAME_DURATION_MINUTES} minutes. WURD reserves {GAME_AI_ADVANCE_BUFFER_MINUTES} minutes before advance as the safe scheduling cutoff.
+Speak ONLY when one of these is true:
+- there has been little/no scheduling activity by Day 2;
+- the conversation is vague (for example "when u free", "tomorrow", "after MNF", "hit me up", "later") and no exact start time is mutually confirmed;
+- one player offered windows/times but the players still have not actually agreed to one specific start;
+- the safe scheduling window is nearly/fully closed and the game is still unresolved.
+
+Stay SILENT when:
+- the players already agreed to a specific day/date AND clock time;
+- a player just made a reasonable specific proposal and is waiting for the opponent;
+- the conversation is naturally progressing and does not yet need intervention.
+
+Rules:
+1. A game is scheduled only when BOTH players agree to a SPECIFIC day/date and start time.
+2. Never repeat, paraphrase, or act as a middleman for a player's latest message.
+3. Use !playtime as context, but live conversation overrides generic availability.
+4. Never suggest a start after the safe cutoff.
+5. Never make, recommend, or imply an FW, FS, AP, or commissioner ruling.
+6. Keep the public message short, friendly, and practical. This is the only nudge they will get.
+7. Do not say "Day 2" unless it helps. The main point is to get a specific time locked in.
+8. A Madden game takes about {GAME_AI_GAME_DURATION_MINUTES} minutes. WURD reserves {GAME_AI_ADVANCE_BUFFER_MINUTES} minutes before advance as the safe-start cutoff.
 
 Current Arizona time: {_game_ai_format_dt(now_az)} AZ
 League advance: {_game_ai_format_dt(advance_dt)} AZ
@@ -2649,18 +2698,13 @@ Status: {safe_status}
 Players:
 {chr(10).join(participant_lines)}
 
-Recent channel history, oldest to newest:
-{chr(10).join(history)}
-
-Newest user message that triggered this check:
-{msg.author.display_name}: {(msg.content or '').strip()}
+Recent PLAYER conversation, oldest to newest:
+{chr(10).join(history) if history else '(no player scheduling conversation yet)'}
 
 Return EXACTLY one JSON object and nothing else:
 {{"should_respond": false, "reason": "brief internal reason", "message": ""}}
 or
-{{"should_respond": true, "reason": "brief internal reason", "message": "the exact short Discord message to send"}}
-
-Use should_respond=true only when intervention is needed NOW.
+{{"should_respond": true, "reason": "brief internal reason", "message": "short reminder telling them what scheduling step is still missing"}}
 """
 
         ai_context = load_ai_advance_info(logger, ADVANCE_INFO_FILE)
@@ -2668,23 +2712,73 @@ Use should_respond=true only when intervention is needed NOW.
         decision = _game_ai_parse_json_reply(raw)
         if not decision or not decision.get("should_respond"):
             logger.info(
-                "[GAME AI] Silent in #%s%s",
-                msg.channel.name,
+                "[GAME AI DAY2] Silent in #%s%s",
+                channel.name,
                 f": {decision.get('reason')}" if decision else ""
             )
             return
 
-        message = decision["message"]
-        await msg.channel.send(message, allowed_mentions=AllowedMentions.none())
+        mentions = " ".join(f"<@{uid}>" for uid in member_ids)
+        content = f"{mentions}\n{decision['message']}" if mentions else decision["message"]
+        sent = await channel.send(
+            content,
+            allowed_mentions=AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
+        )
 
-        state[str(msg.channel.id)] = {
+        state[str(channel.id)] = {
+            "nudge_sent_week": week,
+            "nudge_sent_at": now_az.isoformat(),
             "last_sent_at": now_az.isoformat(),
             "last_reason": decision.get("reason", ""),
-            "last_message_id": msg.id,
+            "last_message_id": sent.id,
         }
         _save_game_ai_scheduler_state(state)
-        logger.info("[GAME AI] Posted in #%s: %s", msg.channel.name, decision.get("reason", ""))
+        logger.info("[GAME AI DAY2] One-and-done nudge posted in #%s: %s", channel.name, decision.get("reason", ""))
 
+
+async def maybe_send_game_scheduling_ai(msg) -> None:
+    """Message-triggered check; same Day-2/one-and-done rules as the background watcher."""
+    if not _game_ai_is_matchup_channel(msg):
+        return
+    await _maybe_send_game_scheduling_nudge(msg.channel, trigger_msg=msg)
+
+
+async def game_ai_day2_watcher_loop() -> None:
+    """Background scan so stalled channels get help even when nobody sends a new message."""
+    await bot.wait_until_ready()
+    await asyncio.sleep(30)
+
+    while not bot.is_closed():
+        try:
+            if not GAME_AI_SCHEDULER_ENABLED:
+                await asyncio.sleep(GAME_AI_DAY2_POLL_SECONDS)
+                continue
+
+            guild = bot.get_guild(GUILD_ID)
+            category = guild.get_channel(CATEGORY_ID) if guild else None
+            if not category or not isinstance(category, nextcord.CategoryChannel):
+                await asyncio.sleep(GAME_AI_DAY2_POLL_SECONDS)
+                continue
+
+            ap_list = load_ap_users()
+            for ch in category.text_channels:
+                tracker = channel_activity_tracker.get(ch.id) or {}
+                member_ids = list(tracker.get("member_ids", []))
+                if len(member_ids) != 2:
+                    continue
+
+                # AP matchups are commissioner/AP-rule situations, not normal scheduling nudges.
+                if any(is_on_ap(uid, ap_list) for uid in member_ids):
+                    continue
+
+                await _maybe_send_game_scheduling_nudge(ch)
+                await asyncio.sleep(1.0)
+
+            await asyncio.sleep(GAME_AI_DAY2_POLL_SECONDS)
+
+        except Exception as e:
+            logger.warning(f"game_ai_day2_watcher_loop error: {e}")
+            await asyncio.sleep(120)
 
 def _is_in_target_game_channel(ch) -> bool:
     try:
@@ -5631,6 +5725,7 @@ async def on_ready():
         bot.loop.create_task(commissioner_advance_reminder_loop())
         bot.loop.create_task(ap_return_reminder_loop())
         bot.loop.create_task(ap_trigger_watcher())
+        bot.loop.create_task(game_ai_day2_watcher_loop())
 
         # start inactivity loop
         # bot.loop.create_task(check_inactivity())  # This is turned off for now

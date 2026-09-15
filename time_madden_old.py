@@ -1,6 +1,8 @@
-# VERSION: time_madden_old_v11.py
-# v11 CHANGE: AP CPU/FS/FW eligibility now uses a locked Madden week instead of a calendar date.
-# MODIFIED SECTION: lines 2113-2220 (AP fw_begin_week migration/storage and bulletin display)
+# VERSION: time_madden_old_v12.py
+# v12 CHANGE: Added quiet-by-default AI scheduling assistance in matchup game channels.
+# v12 DETAILS: AI uses recent channel history, !playtime, player time zones, and the next advance deadline.
+# v12 SAFETY: It never decides FW/FS, never suggests times past the safe cutoff, and fails silent on invalid AI output.
+# MODIFIED SECTIONS: lines 148-160 (config), 2362-2607 (AI scheduling helpers), 5916-5924 (on_message integration).
 # This file is time_madden_old.py, dev on the windows laptop and automatically runs on the raspberrync
 #!/usr/bin/env python3
 
@@ -141,6 +143,21 @@ TEAM_NAME_TO_ID = {}
 WURD_LOGO_PATH = "flyers/assets/wurd_logo.png"
 
 ADVANCE_INFO_FILE = "/home/pi/projects/advance_info.json"
+
+# ===============================
+# AI GAME-CHANNEL SCHEDULING ASSISTANT
+# ===============================
+# Quiet by default. The AI sees matchup context on participant messages, but
+# Discord receives a bot message only when the AI explicitly returns a valid
+# JSON decision with should_respond=true.
+GAME_AI_SCHEDULER_ENABLED = os.getenv("GAME_AI_SCHEDULER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+GAME_AI_SCHEDULER_HISTORY_LIMIT = int(os.getenv("GAME_AI_SCHEDULER_HISTORY_LIMIT", "24") or 24)
+GAME_AI_SCHEDULER_COOLDOWN_MINUTES = int(os.getenv("GAME_AI_SCHEDULER_COOLDOWN_MINUTES", "30") or 30)
+GAME_AI_GAME_DURATION_MINUTES = int(os.getenv("GAME_AI_GAME_DURATION_MINUTES", "60") or 60)
+# 90 minutes before advance gives roughly 60 minutes to play plus setup/overtime/disconnect room.
+GAME_AI_ADVANCE_BUFFER_MINUTES = int(os.getenv("GAME_AI_ADVANCE_BUFFER_MINUTES", "90") or 90)
+GAME_AI_SCHEDULER_STATE_FILE = "data/game_ai_scheduler_state.json"
+_game_ai_scheduler_lock = asyncio.Lock()
 
 # ===============================
 # COMMISSIONER ADVANCE REMINDERS
@@ -2337,6 +2354,257 @@ async def ap_return_reminder_loop():
 
         # Check hourly
         await asyncio.sleep(3600)
+
+# ===============================
+# AI MATCHUP SCHEDULING HELPERS
+# ===============================
+
+def _load_game_ai_scheduler_state() -> dict:
+    try:
+        with open(GAME_AI_SCHEDULER_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        logger.warning(f"Could not load game AI scheduler state: {e}")
+        return {}
+
+
+def _save_game_ai_scheduler_state(state: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(GAME_AI_SCHEDULER_STATE_FILE), exist_ok=True)
+        tmp = GAME_AI_SCHEDULER_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, GAME_AI_SCHEDULER_STATE_FILE)
+    except Exception as e:
+        logger.warning(f"Could not save game AI scheduler state: {e}")
+
+
+def _game_ai_timezone_from_member(member) -> tuple[str, str] | None:
+    """Infer the member's league time-zone tag from the Discord display name."""
+    name = (getattr(member, "display_name", "") or "").upper()
+    matches = re.findall(r"(?:^|[^A-Z])(ET|CT|MT|PT|AZ)(?:$|[^A-Z])", name)
+    if not matches:
+        return None
+
+    tag = matches[-1]
+    zone_map = {
+        "ET": "US/Eastern",
+        "CT": "US/Central",
+        "MT": "US/Mountain",
+        "PT": "US/Pacific",
+        "AZ": "US/Arizona",
+    }
+    return tag, zone_map[tag]
+
+
+def _game_ai_format_dt(dt: datetime, tz_name: str = "US/Arizona") -> str:
+    local = dt.astimezone(pytz.timezone(tz_name))
+    return local.strftime("%A, %b %d at %I:%M %p").replace(" 0", " ")
+
+
+def _game_ai_parse_json_reply(raw: str) -> dict | None:
+    """Strict parser: invalid/non-JSON AI output means stay silent."""
+    if not raw:
+        return None
+    txt = raw.strip()
+    if txt.startswith("```"):
+        txt = re.sub(r"^```(?:json)?\s*", "", txt, flags=re.IGNORECASE)
+        txt = re.sub(r"\s*```$", "", txt)
+    try:
+        obj = json.loads(txt)
+    except Exception:
+        logger.info("[GAME AI] Non-JSON AI response; staying silent: %r", txt[:300])
+        return None
+    if not isinstance(obj, dict):
+        return None
+    if obj.get("should_respond") is not True:
+        return {"should_respond": False, "reason": str(obj.get("reason") or "")}
+    message = str(obj.get("message") or "").strip()
+    if not message:
+        return None
+    return {
+        "should_respond": True,
+        "reason": str(obj.get("reason") or ""),
+        "message": message[:1500],
+    }
+
+
+async def _game_ai_recent_history(channel, limit: int) -> list[str]:
+    rows = []
+    try:
+        async for m in channel.history(limit=limit, oldest_first=True):
+            content = (m.content or "").strip()
+            if not content:
+                continue
+            author = getattr(m.author, "display_name", getattr(m.author, "name", "Unknown"))
+            stamp = m.created_at.astimezone(pytz.timezone("US/Arizona")).strftime("%a %I:%M %p AZ")
+            rows.append(f"[{stamp}] {author}: {content[:700]}")
+    except Exception as e:
+        logger.warning(f"[GAME AI] history read failed in #{getattr(channel, 'name', '?')}: {e}")
+    return rows[-limit:]
+
+
+def _game_ai_is_matchup_channel(msg) -> bool:
+    if not msg.guild or not isinstance(msg.channel, nextcord.TextChannel):
+        return False
+    category = getattr(msg.channel, "category", None)
+    if not category or category.id != CATEGORY_ID:
+        return False
+    tracker = channel_activity_tracker.get(msg.channel.id)
+    member_ids = tracker.get("member_ids", []) if tracker else []
+    return len(member_ids) == 2
+
+
+async def maybe_send_game_scheduling_ai(msg) -> None:
+    """
+    Quiet-by-default AI scheduling coach for WURD matchup channels.
+
+    The AI may nudge vague/stalled scheduling, reject unsafe times near advance,
+    or recognize that a specific time still needs confirmation. It must never
+    award or recommend FW/FS and it never posts unless a strict JSON response
+    explicitly says should_respond=true.
+    """
+    if not GAME_AI_SCHEDULER_ENABLED:
+        return
+    if msg.author == bot.user or getattr(msg.author, "bot", False):
+        return
+    if not _game_ai_is_matchup_channel(msg):
+        return
+    if (msg.content or "").lstrip().startswith("!"):
+        return
+
+    tracker = channel_activity_tracker.get(msg.channel.id) or {}
+    member_ids = list(tracker.get("member_ids", []))
+    if msg.author.id not in member_ids:
+        # Commissioners can still talk in matchup channels, but their messages
+        # should not trigger the scheduling assistant.
+        return
+
+    # The scheduling assistant is not allowed to guess the advance deadline.
+    info = _load_scheduled_advance_info()
+    if not info or not info.get("advance_time_iso"):
+        logger.info("[GAME AI] No valid advance info; staying silent in #%s", msg.channel.name)
+        return
+    try:
+        advance_dt = _parse_scheduled_advance(info["advance_time_iso"])
+    except Exception as e:
+        logger.warning(f"[GAME AI] Could not parse advance deadline: {e}")
+        return
+
+    az = pytz.timezone("US/Arizona")
+    now_az = datetime.now(az)
+    safe_cutoff = advance_dt - timedelta(minutes=GAME_AI_ADVANCE_BUFFER_MINUTES)
+
+    # Do not react to messages after the advance itself. At that point the game
+    # result belongs with commissioners, not an automated scheduling coach.
+    if now_az >= advance_dt:
+        return
+
+    async with _game_ai_scheduler_lock:
+        state = _load_game_ai_scheduler_state()
+        ch_state = state.get(str(msg.channel.id), {})
+        last_sent_raw = ch_state.get("last_sent_at")
+        if last_sent_raw:
+            try:
+                last_sent = datetime.fromisoformat(last_sent_raw)
+                if last_sent.tzinfo is None:
+                    last_sent = az.localize(last_sent)
+                if now_az - last_sent.astimezone(az) < timedelta(minutes=GAME_AI_SCHEDULER_COOLDOWN_MINUTES):
+                    return
+            except Exception:
+                pass
+
+        history = await _game_ai_recent_history(msg.channel, GAME_AI_SCHEDULER_HISTORY_LIMIT)
+        if not history:
+            return
+
+        guild = msg.guild
+        participant_lines = []
+        for uid in member_ids:
+            member = guild.get_member(uid)
+            if not member:
+                continue
+            tz_info = _game_ai_timezone_from_member(member)
+            tz_text = "unknown league timezone"
+            if tz_info:
+                tag, zone_name = tz_info
+                local_now = now_az.astimezone(pytz.timezone(zone_name))
+                tz_text = f"{tag}; current local time {local_now.strftime('%I:%M %p').lstrip('0')}"
+            availability = get_playtime(uid) or "not set"
+            participant_lines.append(
+                f"- {member.display_name} (Discord ID {uid}): {tz_text}; !playtime={availability}"
+            )
+
+        safe_status = (
+            "SAFE SCHEDULING WINDOW IS ALREADY CLOSED. You may only tell them there is no longer enough "
+            "buffer to safely schedule a new start before advance and that they should contact a commissioner."
+            if now_az >= safe_cutoff
+            else "Safe scheduling window is still open."
+        )
+
+        prompt = f"""
+You are the WURD Madden league GAME-CHANNEL SCHEDULING ASSISTANT.
+
+Your default action is SILENCE. Only speak when a short intervention is genuinely needed to help the two players reach a specific, mutually confirmed game start before advance. If they are naturally making reasonable progress, joking, talking football, or already have a clear specific time being worked out, stay silent.
+
+WURD scheduling rules for this task:
+1. A game is not scheduled until BOTH players agree to a SPECIFIC date/day and start time.
+2. Vague phrases such as "tomorrow", "later", "hit me up", "sounds good", "I'll let you know", or "after work" are not a confirmed time by themselves.
+3. If one player proposes a specific time and the other clearly accepts that exact time, no scheduling correction is needed. You may stay silent; do not congratulate every confirmation.
+4. Use the players' !playtime availability as context, but live conversation overrides generic availability.
+5. Never suggest or confirm a game start after the safe cutoff.
+6. Never make, recommend, or imply an FW, FS, AP, or commissioner ruling. If the safe window is closed and scheduling is unresolved, simply direct them to contact a commissioner.
+7. Do not scold or threaten. Be concise and practical.
+8. Do not repeat a reminder that the bot has already recently made unless the situation materially changed.
+9. A normal Madden game takes about {GAME_AI_GAME_DURATION_MINUTES} minutes. WURD reserves {GAME_AI_ADVANCE_BUFFER_MINUTES} minutes before advance as the safe scheduling cutoff.
+
+Current Arizona time: {_game_ai_format_dt(now_az)} AZ
+League advance: {_game_ai_format_dt(advance_dt)} AZ
+Latest safe START time: {_game_ai_format_dt(safe_cutoff)} AZ
+Status: {safe_status}
+
+Players:
+{chr(10).join(participant_lines)}
+
+Recent channel history, oldest to newest:
+{chr(10).join(history)}
+
+Newest user message that triggered this check:
+{msg.author.display_name}: {(msg.content or '').strip()}
+
+Return EXACTLY one JSON object and nothing else:
+{{"should_respond": false, "reason": "brief internal reason", "message": ""}}
+or
+{{"should_respond": true, "reason": "brief internal reason", "message": "the exact short Discord message to send"}}
+
+Use should_respond=true only when intervention is needed NOW.
+"""
+
+        ai_context = load_ai_advance_info(logger, ADVANCE_INFO_FILE)
+        raw = generate_ai_reply(prompt, ai_context)
+        decision = _game_ai_parse_json_reply(raw)
+        if not decision or not decision.get("should_respond"):
+            logger.info(
+                "[GAME AI] Silent in #%s%s",
+                msg.channel.name,
+                f": {decision.get('reason')}" if decision else ""
+            )
+            return
+
+        message = decision["message"]
+        await msg.channel.send(message, allowed_mentions=AllowedMentions.none())
+
+        state[str(msg.channel.id)] = {
+            "last_sent_at": now_az.isoformat(),
+            "last_reason": decision.get("reason", ""),
+            "last_message_id": msg.id,
+        }
+        _save_game_ai_scheduler_state(state)
+        logger.info("[GAME AI] Posted in #%s: %s", msg.channel.name, decision.get("reason", ""))
+
 
 def _is_in_target_game_channel(ch) -> bool:
     try:
@@ -5644,6 +5912,16 @@ async def on_message(msg):
             if msg.author.id in tracker["member_ids"]:
                 tracker["responses"].add(msg.author.id)  # Mark the member as having responded
         await bot.process_commands(msg)  # Ensure bot commands in on_message are handled
+
+    # ========================================
+    # 🤖 AI GAME-CHANNEL SCHEDULING ASSISTANT
+    # ========================================
+    # Quiet by default: this function evaluates participant messages but posts
+    # only when the AI returns an explicit, valid should_respond=true decision.
+    try:
+        await maybe_send_game_scheduling_ai(msg)
+    except Exception as e:
+        logger.warning(f"Game scheduling AI failed: {e}")
 
     # =============================
     # 🤖 AI LOBBY BOT (SAFE INSERT)

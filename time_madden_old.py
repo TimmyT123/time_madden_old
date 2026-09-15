@@ -1,8 +1,8 @@
-# VERSION: time_madden_old_v12.py
-# v12 CHANGE: Added quiet-by-default AI scheduling assistance in matchup game channels.
-# v12 DETAILS: AI uses recent channel history, !playtime, player time zones, and the next advance deadline.
-# v12 SAFETY: It never decides FW/FS, never suggests times past the safe cutoff, and fails silent on invalid AI output.
-# MODIFIED SECTIONS: lines 148-160 (config), 2362-2607 (AI scheduling helpers), 5916-5924 (on_message integration).
+# VERSION: time_madden_old_v13.py
+# v13 CHANGE: Game-channel AI now waits for the opponent instead of echoing/rephrasing a player's scheduling message.
+# v13 DETAILS: Direct scheduling proposals/questions are deterministically held silent; confirmed exact-time replies are also held silent.
+# v13 SAFETY: The AI may intervene only after the users' exchange actually needs help, and still never decides FW/FS/AP.
+# MODIFIED SECTIONS: AI game-channel scheduling helpers and prompt near the GAME-CHANNEL SCHEDULING ASSISTANT section.
 # This file is time_madden_old.py, dev on the windows laptop and automatically runs on the raspberrync
 #!/usr/bin/env python3
 
@@ -2405,6 +2405,65 @@ def _game_ai_format_dt(dt: datetime, tz_name: str = "US/Arizona") -> str:
     return local.strftime("%A, %b %d at %I:%M %p").replace(" 0", " ")
 
 
+# A concrete clock time such as 6 PM, 6:30pm, 9 AM, etc.
+_GAME_AI_EXPLICIT_TIME_RE = re.compile(
+    r"\b(?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?)\b",
+    re.IGNORECASE,
+)
+
+_GAME_AI_SIMPLE_ACCEPT_RE = re.compile(
+    r"^\s*(?:yeah|yea|yep|yes|yup|ok|okay|sure|bet|works|that works|sounds good|good with me|confirmed|i can do that|i can make that)(?:[!. ]*)$",
+    re.IGNORECASE,
+)
+
+
+def _game_ai_is_player_scheduling_turn(text: str) -> bool:
+    """
+    Return True when the newest player message is itself a scheduling proposal/question.
+
+    The bot should NOT immediately paraphrase or repeat that message. It should give
+    the opponent a chance to answer first.
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+
+    # A concrete proposed time is already useful scheduling progress.
+    if _GAME_AI_EXPLICIT_TIME_RE.search(t):
+        return True
+
+    low = t.casefold()
+    scheduling_words = (
+        "tomorrow", "tonight", "today", "monday", "tuesday", "wednesday",
+        "thursday", "friday", "saturday", "sunday", "after mnf", "after snf",
+        "after work", "before work", "when can", "what time", "can we play",
+        "can you play", "you good with", "work for you", "how does", "later",
+    )
+
+    # Questions like "After MNF still?" or "Can you play tomorrow?" should be
+    # answered by the opponent, not echoed by WURD Bot.
+    if "?" in t and any(word in low for word in scheduling_words):
+        return True
+
+    return False
+
+
+async def _game_ai_previous_participant_message(msg, member_ids: list[int]):
+    """Get the most recent participant message before the current message."""
+    try:
+        async for prior in msg.channel.history(limit=12, before=msg, oldest_first=False):
+            if getattr(prior.author, "bot", False):
+                continue
+            if prior.author.id not in member_ids:
+                continue
+            content = (prior.content or "").strip()
+            if content:
+                return prior
+    except Exception as e:
+        logger.warning(f"[GAME AI] previous-message lookup failed in #{getattr(msg.channel, 'name', '?')}: {e}")
+    return None
+
+
 def _game_ai_parse_json_reply(raw: str) -> dict | None:
     """Strict parser: invalid/non-JSON AI output means stay silent."""
     if not raw:
@@ -2483,6 +2542,25 @@ async def maybe_send_game_scheduling_ai(msg) -> None:
         # should not trigger the scheduling assistant.
         return
 
+    newest_text = (msg.content or "").strip()
+
+    # HARD QUIET RULE: if a player just proposed/asked about a day or time,
+    # let the opponent answer. The bot must never immediately echo/rephrase it.
+    # Example: "Tomorrow at 6 PM AZ good?" or "After MNF still?"
+    if _game_ai_is_player_scheduling_turn(newest_text):
+        logger.info("[GAME AI] Waiting for opponent response in #%s", msg.channel.name)
+        return
+
+    # HARD QUIET RULE: if the newest message is a simple acceptance and the
+    # prior participant message already contained a concrete clock time, the
+    # users just confirmed a valid specific time. No bot congratulations or
+    # repetition is needed.
+    if _GAME_AI_SIMPLE_ACCEPT_RE.match(newest_text):
+        prior = await _game_ai_previous_participant_message(msg, member_ids)
+        if prior and _GAME_AI_EXPLICIT_TIME_RE.search((prior.content or "")):
+            logger.info("[GAME AI] Exact-time agreement reached naturally in #%s; staying silent", msg.channel.name)
+            return
+
     # The scheduling assistant is not allowed to guess the advance deadline.
     info = _load_scheduled_advance_info()
     if not info or not info.get("advance_time_iso"):
@@ -2550,10 +2628,12 @@ You are the WURD Madden league GAME-CHANNEL SCHEDULING ASSISTANT.
 
 Your default action is SILENCE. Only speak when a short intervention is genuinely needed to help the two players reach a specific, mutually confirmed game start before advance. If they are naturally making reasonable progress, joking, talking football, or already have a clear specific time being worked out, stay silent.
 
+CRITICAL CONVERSATION RULE: NEVER paraphrase, repeat, reinforce, or relay a scheduling question/proposal that a player just sent. The opponent should answer the player directly. You are a coach only when the users get stuck; you are NOT a go-between. If the newest message itself asks the opponent about a day/time, should_respond MUST be false.
+
 WURD scheduling rules for this task:
 1. A game is not scheduled until BOTH players agree to a SPECIFIC date/day and start time.
 2. Vague phrases such as "tomorrow", "later", "hit me up", "sounds good", "I'll let you know", or "after work" are not a confirmed time by themselves.
-3. If one player proposes a specific time and the other clearly accepts that exact time, no scheduling correction is needed. You may stay silent; do not congratulate every confirmation.
+3. If one player proposes a specific time, WAIT for the opponent to answer and stay silent. If the opponent clearly accepts that exact time, stay silent; do not congratulate, restate, or announce the confirmation.
 4. Use the players' !playtime availability as context, but live conversation overrides generic availability.
 5. Never suggest or confirm a game start after the safe cutoff.
 6. Never make, recommend, or imply an FW, FS, AP, or commissioner ruling. If the safe window is closed and scheduling is unresolved, simply direct them to contact a commissioner.

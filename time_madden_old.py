@@ -1,8 +1,10 @@
-# VERSION: time_madden_old_v14.py
-# v14 CHANGE: Game-channel AI now gives at most ONE scheduling nudge per matchup/week, primarily on Day 2.
-# v14 DETAILS: Added a Day-2 background watcher so stalled/vague channels can be helped even when nobody sends a new message.
-# v14 SAFETY: Bot stays silent if a specific time is already agreed, never echoes fresh proposals, and never decides FW/FS/AP.
-# MODIFIED SECTIONS: AI game-channel config/helpers, one-and-done nudge logic, Day-2 watcher, and on_ready startup loop.
+# VERSION: time_madden_old_v16.py
+# v16 CHANGE: Automatic no-communication warnings to #commish-rm are OFF by default; !nocomm tracking/history remains active.
+# v15 CHANGE: Added season-long no-communication tracking for User-vs-User game channels.
+# v15 DETAILS: Checks shortly before advance and again before old matchup channels are deleted; records user, team, opponent, and week.
+# v15 CPU/AP SAFETY: CPU games have no matchup channel and are never counted; channels containing an AP user are skipped because the matchup becomes CPU-play eligible.
+# v15 COMMAND: Added commissioner/admin !nocomm [team/user] report; history resets automatically at Preseason Week 1 (with Week 1 fallback).
+# MODIFIED SECTIONS: no-communication storage/helpers, pre-advance watcher, advance channel cleanup snapshot, admin help, !nocomm command, and startup loops.
 # This file is time_madden_old.py, dev on the windows laptop and automatically runs on the raspberrync
 #!/usr/bin/env python3
 
@@ -184,6 +186,17 @@ COMMISSIONER_ADVANCE_POLL_SECONDS = int(
 )
 COMMISSIONER_ADVANCE_STATE_FILE = "data/commissioner_advance_reminder.json"
 _commissioner_claim_lock = asyncio.Lock()
+
+# ===============================
+# NO-COMMUNICATION SEASON TRACKER
+# ===============================
+NO_COMM_HISTORY_FILE = os.getenv("NO_COMM_HISTORY_FILE", "data/no_communication_history.json")
+# Keep season tracking active, but do not post automatic no-communication warnings to #commish-rm.
+# Set NO_COMM_COMMISH_WARNING_ENABLED=true in .env later if commissioners want those alerts back.
+NO_COMM_COMMISH_WARNING_ENABLED = os.getenv("NO_COMM_COMMISH_WARNING_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+NO_COMM_PRE_ADVANCE_MINUTES = int(os.getenv("NO_COMM_PRE_ADVANCE_MINUTES", "30") or 30)
+NO_COMM_POLL_SECONDS = int(os.getenv("NO_COMM_POLL_SECONDS", "60") or 60)
+_no_comm_lock = asyncio.Lock()
 
 
 # =========================
@@ -1097,6 +1110,8 @@ Shows PT, AZ, MT, CT, and ET publicly in the channel where the command is used.
 🔒 **WURD Admin Commands**
 *These commands are shown only to admins/authorized users who use `!help` in DM.*
 
+**!nocomm [team/user]** — Show current-season users who never communicated in a User-vs-User game channel.
+
 **!logs** — Search the bot message logs.
 
 • `!logs date=YYYY-MM-DD [here]`
@@ -1455,6 +1470,316 @@ def _save_week_state(wk, pairs, pre_sent=None, advance_time="__KEEP__"):
 
     with open(WEEK_STATE_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+# === NO-COMMUNICATION TRACKING ==============================================
+def _load_no_comm_history() -> dict:
+    try:
+        with open(NO_COMM_HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                data.setdefault("season_started_at", None)
+                data.setdefault("last_week_seen", None)
+                data.setdefault("incidents", [])
+                data.setdefault("finalized_weeks", [])
+                return data
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"Could not load no-communication history: {e}")
+
+    return {
+        "season_started_at": None,
+        "last_week_seen": None,
+        "incidents": [],
+        "finalized_weeks": [],
+    }
+
+
+def _save_no_comm_history(data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(NO_COMM_HISTORY_FILE), exist_ok=True)
+        tmp = NO_COMM_HISTORY_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, NO_COMM_HISTORY_FILE)
+    except Exception as e:
+        logger.error(f"Could not save no-communication history: {e}")
+
+
+def _reset_no_comm_history(reason: str) -> None:
+    now_az = datetime.now(pytz.timezone("US/Arizona")).isoformat()
+    data = {
+        "season_started_at": now_az,
+        "last_week_seen": None,
+        "incidents": [],
+        "finalized_weeks": [],
+        "reset_reason": reason,
+    }
+    _save_no_comm_history(data)
+    logger.info("No-communication history reset: %s", reason)
+
+
+def _maybe_reset_no_comm_for_new_season(new_week: int | None, previous_week: int | None = None) -> None:
+    """Reset at PRE 1; Week 1 is a fallback if preseason was skipped."""
+    try:
+        new_week = int(new_week) if new_week is not None else None
+    except (TypeError, ValueError):
+        return
+
+    data = _load_no_comm_history()
+
+    # Primary reset point: Preseason Week 1 (-3).
+    if new_week == -3:
+        if data.get("last_week_seen") != -3 or data.get("incidents"):
+            _reset_no_comm_history("Preseason Week 1 started")
+        data = _load_no_comm_history()
+        data["last_week_seen"] = -3
+        _save_no_comm_history(data)
+        return
+
+    # Fallback: league jumps straight into Week 1 after an old season/cut week.
+    if new_week == 1:
+        old = previous_week
+        if old is None:
+            old = data.get("last_week_seen")
+        try:
+            old = int(old) if old is not None else None
+        except (TypeError, ValueError):
+            old = None
+
+        if old in (-4, 19, 20, 21, 23) or (old is not None and old > 1):
+            _reset_no_comm_history("Week 1 started (new-season fallback)")
+            data = _load_no_comm_history()
+
+    data["last_week_seen"] = new_week
+    _save_no_comm_history(data)
+
+
+def _team_for_member(member: nextcord.Member | None) -> str | None:
+    if member is None:
+        return None
+    return extract_team_from_nick(member.display_name or member.name or "")
+
+
+def _no_comm_week_label(week: int) -> str:
+    return _advance_week_label(week)
+
+
+async def _collect_no_comm_incidents(guild: nextcord.Guild, week: int) -> list[dict]:
+    """Return users who never posted in their User-vs-User matchup channel."""
+    if not guild or not week or week < 1:
+        return []
+
+    category = guild.get_channel(CATEGORY_ID)
+    if not category or not isinstance(category, nextcord.CategoryChannel):
+        return []
+
+    ap_list = load_ap_users()
+    found = []
+
+    for ch in category.text_channels:
+        tracker = channel_activity_tracker.get(ch.id)
+        if not tracker:
+            continue
+
+        member_ids = [int(x) for x in tracker.get("member_ids", [])]
+        # A valid User-vs-User matchup channel should have two player members.
+        # CPU matchups have no matchup channel and therefore never reach this code.
+        if len(member_ids) != 2:
+            continue
+
+        # If either player is on AP, this matchup is effectively CPU-play eligible.
+        # Do not treat the AP player (or opponent) as a no-communication incident.
+        if any(is_on_ap(mid, ap_list) for mid in member_ids):
+            continue
+
+        # Make this restart-safe: rebuild responses from channel history before finalizing.
+        responses = set(tracker.get("responses", set()))
+        try:
+            async for hist_msg in ch.history(limit=200):
+                if hist_msg.author.id in member_ids:
+                    responses.add(hist_msg.author.id)
+        except Exception as e:
+            logger.warning("No-comm history scan failed in #%s: %s", ch.name, e)
+
+        tracker["responses"] = responses
+
+        members = {mid: guild.get_member(mid) for mid in member_ids}
+        teams = {mid: _team_for_member(members[mid]) for mid in member_ids}
+
+        # If team parsing failed, channel name still gives commissioners context,
+        # but avoid inventing an opponent team.
+        for mid in member_ids:
+            if mid in responses:
+                continue
+
+            other_id = member_ids[0] if member_ids[1] == mid else member_ids[1]
+            member = members.get(mid)
+            other = members.get(other_id)
+            found.append({
+                "week": int(week),
+                "user_id": int(mid),
+                "display_name": member.display_name if member else f"User {mid}",
+                "team": teams.get(mid) or "UNKNOWN",
+                "opponent_team": teams.get(other_id) or "UNKNOWN",
+                "opponent_user_id": int(other_id),
+                "opponent_display_name": other.display_name if other else f"User {other_id}",
+                "channel_id": int(ch.id),
+                "channel_name": ch.name,
+                "recorded_at": datetime.now(pytz.timezone("US/Arizona")).isoformat(),
+            })
+
+    return found
+
+
+def _merge_no_comm_incidents(week: int, incidents: list[dict], finalize_week: bool = False) -> list[dict]:
+    data = _load_no_comm_history()
+    existing = data.get("incidents", [])
+
+    # A final snapshot is authoritative for that week. This removes a preliminary
+    # flag if the user communicated after the pre-advance warning but before the
+    # old matchup channel was deleted.
+    if finalize_week:
+        existing = [
+            x for x in existing
+            if not isinstance(x, dict) or int(x.get("week", -999)) != int(week)
+        ]
+
+    keys = {
+        (int(x.get("week", -999)), int(x.get("user_id", 0)), str(x.get("opponent_team", "")))
+        for x in existing
+        if isinstance(x, dict)
+    }
+
+    added = []
+    for item in incidents:
+        key = (int(item.get("week", -999)), int(item.get("user_id", 0)), str(item.get("opponent_team", "")))
+        if key not in keys:
+            existing.append(item)
+            keys.add(key)
+            added.append(item)
+
+    data["incidents"] = existing
+    data["last_week_seen"] = int(week)
+    if finalize_week:
+        finalized = {int(w) for w in data.get("finalized_weeks", []) if str(w).lstrip("-").isdigit()}
+        finalized.add(int(week))
+        data["finalized_weeks"] = sorted(finalized)
+    _save_no_comm_history(data)
+    return added
+
+
+async def _record_no_communication_for_week(
+    guild: nextcord.Guild,
+    week: int,
+    notify_channel=None,
+    finalize_week: bool = False,
+    force_notify: bool = False,
+) -> list[dict]:
+    """Scan current matchup channels, persist incidents, and optionally notify commissioners."""
+    try:
+        week = int(week)
+    except (TypeError, ValueError):
+        return []
+
+    if week < 1:
+        return []
+
+    async with _no_comm_lock:
+        incidents = await _collect_no_comm_incidents(guild, week)
+        added = _merge_no_comm_incidents(week, incidents, finalize_week=finalize_week)
+
+    if notify_channel and (incidents or force_notify):
+        if incidents:
+            lines = [
+                f"⚠️ **NO-COMMUNICATION CHECK — {_no_comm_week_label(week)}**",
+                "These users have **no player message** in their User-vs-User game channel:",
+                "",
+            ]
+            for item in incidents:
+                mention = f"<@{item['user_id']}>"
+                lines.append(
+                    f"• {mention} — **{item['team']}** vs **{item['opponent_team']}**"
+                )
+            lines.extend([
+                "",
+                "CPU matchups are not counted. AP matchups are skipped.",
+                "Use `!nocomm` for the current-season history.",
+            ])
+            await notify_channel.send(
+                "\n".join(lines),
+                allowed_mentions=AllowedMentions(users=True, roles=False, everyone=False),
+            )
+        elif force_notify:
+            await notify_channel.send(
+                f"✅ **NO-COMMUNICATION CHECK — {_no_comm_week_label(week)}**\n"
+                "Every tracked User-vs-User participant has communicated in the game channel."
+            )
+
+    return incidents
+
+
+async def no_communication_pre_advance_loop():
+    """Run once per week shortly before the scheduled advance."""
+    await bot.wait_until_ready()
+    await asyncio.sleep(20)
+
+    while not bot.is_closed():
+        try:
+            info = _load_scheduled_advance_info()
+            if not info:
+                await asyncio.sleep(NO_COMM_POLL_SECONDS)
+                continue
+
+            current_week = info.get("current_week", info.get("week"))
+            try:
+                current_week = int(current_week)
+            except (TypeError, ValueError):
+                await asyncio.sleep(NO_COMM_POLL_SECONDS)
+                continue
+
+            if current_week < 1:
+                await asyncio.sleep(NO_COMM_POLL_SECONDS)
+                continue
+
+            advance_dt = _parse_scheduled_advance(info["advance_time_iso"])
+            now_az = datetime.now(pytz.timezone("US/Arizona"))
+            check_time = advance_dt - timedelta(minutes=NO_COMM_PRE_ADVANCE_MINUTES)
+
+            data = _load_no_comm_history()
+            finalized = {int(w) for w in data.get("finalized_weeks", []) if str(w).lstrip("-").isdigit()}
+            if now_az >= check_time and current_week not in finalized:
+                guild = bot.get_guild(GUILD_ID)
+                notify_channel = (
+                    bot.get_channel(COMMISSIONER_ADVANCE_CHANNEL_ID)
+                    if NO_COMM_COMMISH_WARNING_ENABLED
+                    else None
+                )
+                if guild:
+                    # Mark the week finalized so this watcher posts only once.
+                    await _record_no_communication_for_week(
+                        guild,
+                        current_week,
+                        notify_channel=notify_channel,
+                        finalize_week=False,
+                        force_notify=False,
+                    )
+                    # Mark only the warning/check as sent. The authoritative final
+                    # history is reconciled when the old channels are deleted.
+                    data = _load_no_comm_history()
+                    finalized = {int(w) for w in data.get("finalized_weeks", []) if str(w).lstrip("-").isdigit()}
+                    finalized.add(current_week)
+                    data["finalized_weeks"] = sorted(finalized)
+                    _save_no_comm_history(data)
+                    logger.info("No-communication pre-advance check completed for week %s", current_week)
+
+            await asyncio.sleep(NO_COMM_POLL_SECONDS)
+
+        except Exception as e:
+            logger.warning("no_communication_pre_advance_loop error: %s", e)
+            await asyncio.sleep(120)
+# === END NO-COMMUNICATION TRACKING ==========================================
+
 
 def get_current_week_and_matchups():
     st = _load_week_state()
@@ -4086,6 +4411,69 @@ def admin_or_authorized():
     return commands.check(predicate)
 
 
+def commissioner_admin_or_authorized():
+    async def predicate(ctx: commands.Context) -> bool:
+        try:
+            if int(ctx.author.id) in AUTHORIZED_USERS:
+                return True
+        except Exception:
+            pass
+
+        if ctx.guild is None:
+            guild = bot.get_guild(GUILD_ID)
+            member = guild.get_member(ctx.author.id) if guild else None
+        else:
+            member = ctx.author
+
+        if member is None:
+            return False
+        return any(r.name in {ADMIN_ROLE_NAME, COMMISSIONER_ROLE_NAME} for r in member.roles)
+    return commands.check(predicate)
+
+
+@bot.command(name="nocomm", aliases=["nocommunication", "no_comm"])
+@commissioner_admin_or_authorized()
+async def no_communication_command(ctx, *, search: str = ""):
+    """Commissioner/admin current-season no-communication history."""
+    data = _load_no_comm_history()
+    incidents = [x for x in data.get("incidents", []) if isinstance(x, dict)]
+
+    term = (search or "").strip().lower()
+    if term:
+        incidents = [
+            x for x in incidents
+            if term in str(x.get("display_name", "")).lower()
+            or term in str(x.get("team", "")).lower()
+            or term in str(x.get("opponent_team", "")).lower()
+        ]
+
+    if not incidents:
+        suffix = f" matching **{search.strip()}**" if term else ""
+        return await ctx.send(
+            f"✅ No no-communication incidents recorded this season{suffix}."
+        )
+
+    # Group by user so repeat problems stand out while retaining week/opponent details.
+    grouped = defaultdict(list)
+    for item in incidents:
+        grouped[(int(item.get("user_id", 0)), str(item.get("display_name", "Unknown")), str(item.get("team", "UNKNOWN")))].append(item)
+
+    lines = ["📋 **WURD NO-COMMUNICATION HISTORY — CURRENT SEASON**", ""]
+    for (uid, display, team), rows in sorted(grouped.items(), key=lambda kv: (-len(kv[1]), kv[0][1].lower())):
+        rows.sort(key=lambda x: int(x.get("week", 999)))
+        lines.append(f"**{display} — {team}** — {len(rows)} time{'s' if len(rows) != 1 else ''}")
+        for item in rows:
+            lines.append(
+                f"• {_no_comm_week_label(int(item.get('week', 0)))} vs **{item.get('opponent_team', 'UNKNOWN')}**"
+            )
+        lines.append("")
+
+    lines.append("*CPU games are not counted. AP matchups are skipped. History resets for the next season.*")
+
+    for chunk in split_message("\n".join(lines)):
+        await ctx.send(chunk, allowed_mentions=AllowedMentions.none())
+
+
 @bot.command(name="seed_week")
 @admin_or_authorized()
 async def seed_week(ctx, week: int):
@@ -5726,6 +6114,7 @@ async def on_ready():
     if not startup_loops_started:
         bot.loop.create_task(pre_advance_reminder_loop())
         bot.loop.create_task(commissioner_advance_reminder_loop())
+        bot.loop.create_task(no_communication_pre_advance_loop())
         bot.loop.create_task(ap_return_reminder_loop())
         bot.loop.create_task(ap_trigger_watcher())
         bot.loop.create_task(game_ai_day2_watcher_loop())
@@ -6135,9 +6524,11 @@ async def on_message(msg):
         if msg.guild and ADVANCE_CHANNEL_ID and msg.channel.id == ADVANCE_CHANNEL_ID:
             wk, pairs, mapping = _parse_advance_block(msg.content or "")
             if wk and pairs:
+                previous_week = _load_week_state().get("week")
                 _current_week = wk
                 _current_pairs = pairs
                 _current_matchups = mapping
+                _maybe_reset_no_comm_for_new_season(wk, previous_week)
 
                 # ⬇️ persist to disk so it survives restarts
                 _save_week_state(
@@ -6393,6 +6784,18 @@ async def on_message(msg):
                 if parsed_week == -4:
                     guild = bot.get_guild(GUILD_ID)
 
+                    # Final safety snapshot before old matchup channels disappear.
+                    # Use the previous tracked week if it is a regular/playoff week.
+                    previous_week = _load_no_comm_history().get("last_week_seen")
+                    try:
+                        previous_week = int(previous_week) if previous_week is not None else None
+                    except (TypeError, ValueError):
+                        previous_week = None
+                    if previous_week and previous_week >= 1:
+                        await _record_no_communication_for_week(
+                            guild, previous_week, notify_channel=bot.get_channel(COMMISSIONER_ADVANCE_CHANNEL_ID), finalize_week=True
+                        )
+
                     # Clear old matchup channels
                     await delete_category_channels(guild)
                     channel_activity_tracker.clear()
@@ -6497,6 +6900,22 @@ async def on_message(msg):
                 # For both 'week N' *and* 'pre N', build the game forums
                 if any(k in msg_text for k in ("week", "pre")):
                     guild = bot.get_guild(GUILD_ID)
+
+                    # Final safety snapshot before deleting the OLD matchup channels.
+                    # This catches early advances that happen before the scheduled pre-advance watcher.
+                    previous_stage_map = {1: -4, 19: 18, 20: 19, 21: 20, 23: 21}
+                    previous_week = previous_stage_map.get(parsed_week)
+                    if previous_week is None and parsed_week is not None and 2 <= parsed_week <= 18:
+                        previous_week = parsed_week - 1
+                    if previous_week is not None and previous_week >= 1:
+                        await _record_no_communication_for_week(
+                            guild,
+                            previous_week,
+                            notify_channel=bot.get_channel(COMMISSIONER_ADVANCE_CHANNEL_ID),
+                            finalize_week=True,
+                        )
+
+                    _maybe_reset_no_comm_for_new_season(parsed_week, previous_week)
                     await delete_category_channels(guild)
                     channel_activity_tracker.clear()
 

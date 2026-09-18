@@ -150,7 +150,7 @@ ADVANCE_INFO_FILE = "/home/pi/projects/advance_info.json"
 # Quiet by default. The AI sees matchup context on participant messages, but
 # Discord receives a bot message only when the AI explicitly returns a valid
 # JSON decision with should_respond=true.
-GAME_AI_SCHEDULER_ENABLED = os.getenv("GAME_AI_SCHEDULER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+GAME_AI_SCHEDULER_ENABLED = False
 GAME_AI_SCHEDULER_HISTORY_LIMIT = int(os.getenv("GAME_AI_SCHEDULER_HISTORY_LIMIT", "24") or 24)
 GAME_AI_SCHEDULER_COOLDOWN_MINUTES = int(os.getenv("GAME_AI_SCHEDULER_COOLDOWN_MINUTES", "30") or 30)
 GAME_AI_GAME_DURATION_MINUTES = int(os.getenv("GAME_AI_GAME_DURATION_MINUTES", "60") or 60)
@@ -2916,7 +2916,10 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
 
             await channel.send("\u200b")  # zero-width space
 
-            # 4️⃣ Reminder
+            # Scheduling reminder
+            await channel.send("👍 **Let’s get a specific game time locked in.**")
+
+            # Mention reminder
             await channel.send("**Reminder:** Please **@mention** your opponent — some users won’t see messages otherwise.")
 
             # === AP INSERT START ===

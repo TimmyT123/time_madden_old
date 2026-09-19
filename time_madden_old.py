@@ -1,4 +1,5 @@
-# VERSION: time_madden_old_v16.py
+# VERSION: time_madden_old_v17.py
+# v17 CHANGE: Games of the Week now post a one-time FEATURED GAME streaming prompt in each selected matchup channel.
 # v16 CHANGE: Automatic no-communication warnings to #commish-rm are OFF by default; !nocomm tracking/history remains active.
 # v15 CHANGE: Added season-long no-communication tracking for User-vs-User game channels.
 # v15 DETAILS: Checks shortly before advance and again before old matchup channels are deleted; records user, team, opponent, and week.
@@ -420,11 +421,70 @@ async def select_games_of_the_week():
     _current_gotw_pairs = set(tuple(sorted((a, b))) for _, a, b in selected)
 
     await post_gotw_message()
+    await post_gotw_featured_game_prompts()
 
     save_gotw_state({
         "last_week_posted": _current_week,
         "pairs": [list(p) for p in _current_gotw_pairs]
     })
+
+
+async def post_gotw_featured_game_prompts():
+    """Post the GOTW streaming nudge once in each selected matchup channel."""
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        logger.warning("[GOTW] Guild not found while posting Featured Game prompts.")
+        return
+
+    category = guild.get_channel(CATEGORY_ID)
+    if not category or not isinstance(category, nextcord.CategoryChannel):
+        logger.warning("[GOTW] Matchup category not found while posting Featured Game prompts.")
+        return
+
+    prompt = (
+        "🔥 **FEATURED GAME**\n"
+        "People want to see this one. 👀\n"
+        "🎥 Stream it and your matchup gets an **AI poster** in **#game-streams**."
+    )
+
+    for teamA, teamB in sorted(_current_gotw_pairs):
+        # GOTW pairs are stored sorted; restore the schedule's channel order when possible.
+        left, right = order_by_advance(teamA, teamB)
+        wanted_names = {
+            f"{left.lower()}-{right.lower()}",
+            f"{right.lower()}-{left.lower()}",
+        }
+
+        channel = next((ch for ch in category.text_channels if ch.name.lower() in wanted_names), None)
+        if not channel:
+            logger.warning("[GOTW] Matchup channel not found for %s vs %s", teamA, teamB)
+            continue
+
+        # History check makes manual !test_gotw runs / retries safe from duplicate prompts.
+        already_posted = False
+        try:
+            async for msg in channel.history(limit=50):
+                if (
+                    msg.author.id == guild.me.id
+                    and "🔥 **FEATURED GAME**" in (msg.content or "")
+                    and "AI poster" in (msg.content or "")
+                ):
+                    already_posted = True
+                    break
+        except Exception as e:
+            logger.warning("[GOTW] Could not check Featured Game history in #%s: %s", channel.name, e)
+
+        if already_posted:
+            logger.info("[GOTW] Featured Game prompt already exists in #%s", channel.name)
+            continue
+
+        try:
+            await channel.send(prompt, allowed_mentions=AllowedMentions.none())
+            logger.info("[GOTW] Featured Game prompt posted in #%s", channel.name)
+            await asyncio.sleep(1.1)
+        except Exception as e:
+            logger.warning("[GOTW] Failed to post Featured Game prompt in #%s: %s", channel.name, e)
+
 
 async def post_gotw_message():
     channel = bot.get_channel(GAME_STREAMS_CHANNEL_ID)

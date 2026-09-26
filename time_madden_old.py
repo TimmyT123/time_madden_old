@@ -1,4 +1,5 @@
-# VERSION: time_madden_old_v18.py
+# VERSION: time_madden_old_v19.py
+# v19 CHANGE: Power Rankings no longer auto-post in the advance channel; !powerrankings remains available on demand.
 # v18 CHANGE: Matchup channels now show the scheduled advance immediately below the welcome message, converted to the participating users' timezone(s).
 # v17 CHANGE: Games of the Week now post a one-time FEATURED GAME streaming prompt in each selected matchup channel.
 # v16 CHANGE: Automatic no-communication warnings to #commish-rm are OFF by default; !nocomm tracking/history remains active.
@@ -7010,13 +7011,8 @@ async def on_message(msg):
                         await channel.send(chunk, allowed_mentions=AllowedMentions.none())
                         await safe_async_sleep(1.1)
 
-                # 🏈 Post Power Rankings after the weekly advance post
-                if ('all' not in msg_text) and parsed_week is not None and 1 <= parsed_week <= 18:
-                    try:
-                        await post_power_rankings(channel)
-                        await safe_async_sleep(1.1)
-                    except Exception as e:
-                        logger.warning(f"Power rankings post failed: {e}")
+                # v19: Power Rankings are no longer auto-posted in the advance channel.
+                # The !powerrankings command remains available anywhere the bot can respond.
 
                 # For both 'week N' *and* 'pre N', build the game forums
                 if any(k in msg_text for k in ("week", "pre")):

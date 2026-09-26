@@ -1,4 +1,5 @@
-# VERSION: time_madden_old_v17.py
+# VERSION: time_madden_old_v18.py
+# v18 CHANGE: Matchup channels now show the scheduled advance immediately below the welcome message, converted to the participating users' timezone(s).
 # v17 CHANGE: Games of the Week now post a one-time FEATURED GAME streaming prompt in each selected matchup channel.
 # v16 CHANGE: Automatic no-communication warnings to #commish-rm are OFF by default; !nocomm tracking/history remains active.
 # v15 CHANGE: Added season-long no-communication tracking for User-vs-User game channels.
@@ -2330,6 +2331,60 @@ def get_timezone_offset_info(tz1_code, tz2_code, tz1_nick, tz2_nick):
     return f"**{tz1_code} is {abs(diff)} hour(s) {ahead_behind} {tz2_code}**\n" \
            f"example:\n{tz1_nick:<24} is {tz1_time}\n{tz2_nick:<24} is {tz2_time}\n"
 
+MATCHUP_TZ_MAP = {
+    'PT': 'US/Pacific',
+    'AZ': 'US/Arizona',
+    'MT': 'US/Mountain',
+    'CT': 'US/Central',
+    'ET': 'US/Eastern',
+}
+
+def _format_matchup_advance_line(member_info) -> str | None:
+    """Return the scheduled advance in the matchup users' local time zones."""
+    info = _load_scheduled_advance_info()
+    if not info or not info.get("advance_time_iso"):
+        return None
+
+    try:
+        advance_dt = _parse_scheduled_advance(info["advance_time_iso"])
+    except Exception as e:
+        logger.warning(f"Could not format matchup advance line: {e}")
+        return None
+
+    # Keep each zone only once and preserve the players' channel order.
+    zone_codes = []
+    for _mention, display_name in member_info:
+        code = extract_timezone_code(display_name)
+        if code and code in MATCHUP_TZ_MAP and code not in zone_codes:
+            zone_codes.append(code)
+
+    # A matchup should normally have two timezone-tagged users. If a tag is
+    # missing, still show the league deadline in Arizona time rather than omit it.
+    if not zone_codes:
+        zone_codes = ['AZ']
+
+    converted = []
+    for code in zone_codes:
+        local_dt = advance_dt.astimezone(pytz.timezone(MATCHUP_TZ_MAP[code]))
+        converted.append((code, local_dt))
+
+    # Normal WURD advances land on the same calendar day in all U.S. zones.
+    # If that ever changes, include each local day explicitly to avoid ambiguity.
+    local_dates = {dt.date() for _, dt in converted}
+    if len(local_dates) == 1:
+        day = converted[0][1].strftime('%A')
+        times = ' / '.join(
+            f"{dt.strftime('%I:%M %p').lstrip('0')} {code}"
+            for code, dt in converted
+        )
+        return f"🕐 **ADVANCE: {day} @ {times}**"
+
+    parts = [
+        f"{dt.strftime('%A')} @ {dt.strftime('%I:%M %p').lstrip('0')} {code}"
+        for code, dt in converted
+    ]
+    return f"🕐 **ADVANCE: {' / '.join(parts)}**"
+
 
 AP_FILE = 'ap_users.json'
 # --- AP auto-reload state ---
@@ -3279,6 +3334,12 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
             # channel welcome message
             await channel.send(message_content)
             await asyncio.sleep(1.1)
+
+            # Show the advance deadline near the top in the matchup users' local time zone(s).
+            advance_line = _format_matchup_advance_line(member_info)
+            if advance_line:
+                await channel.send(advance_line, allowed_mentions=AllowedMentions.none())
+                await asyncio.sleep(1.1)
 
             await channel.send("\u200b")
             await asyncio.sleep(1.1)

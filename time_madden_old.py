@@ -6305,7 +6305,7 @@ async def on_ready():
 
 # Event to welcome new members to the server
 RECRUIT_AREA_CHANNEL_ID = 1506802048916652032
-RECRUIT_ROLE_NAME = "Recruit"
+RECRUIT_ROLE_NAME = "New Recruit"
 
 @bot.event
 async def on_member_join(member):

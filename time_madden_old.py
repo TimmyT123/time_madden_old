@@ -4453,7 +4453,7 @@ async def get_available_teams_output():
     return "\n".join(output_lines).rstrip()
 
 
-@bot.command(name='available_teams')
+@bot.command(name='available_teams', aliases=['teams_available'])
 async def available_teams(ctx):
     nicknames_to_users_file()  # Call function to save users with matching team names.
     teams_message = await get_available_teams_output()

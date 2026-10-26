@@ -1104,7 +1104,7 @@ bot = commands.Bot(
 # ===============================
 # PUBLIC HELP COMMAND
 # ===============================
-@bot.command(name="help")
+@bot.command(name="help", aliases=['commands'])
 async def help_command(ctx):
     help_text = """🏈 **WURD Bot Commands**
 

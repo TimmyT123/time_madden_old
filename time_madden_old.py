@@ -1,4 +1,5 @@
-# VERSION: time_madden_old_v19.py
+# VERSION: time_madden_old_v20.py
+# v20 CHANGE: Rookie preseason URL uses the newest Madden upload season, not hardcoded season_0.
 # v19 CHANGE: Power Rankings no longer auto-post in the advance channel; !powerrankings remains available on demand.
 # v18 CHANGE: Matchup channels now show the scheduled advance immediately below the welcome message, converted to the participating users' timezone(s).
 # v17 CHANGE: Games of the Week now post a one-time FEATURED GAME streaming prompt in each selected matchup channel.
@@ -5491,6 +5492,26 @@ def _latest_upload_context() -> dict:
     return {"league": league, "season": season, "week": week}
 
 
+def get_rookie_stats_season(league_id: str) -> str | None:
+    """Find latest uploaded season for this league; avoid a hardcoded season."""
+    candidates = []
+    latest = _load_json_quiet(os.path.join(MADDEN_UPLOADS_DIR, "_latest.json"), {}) or {}
+    if str(latest.get("league", "")) == str(league_id):
+        value = str(latest.get("season") or "")
+        if re.fullmatch(r"season_\d+", value):
+            candidates.append(int(value.split("_")[1]))
+
+    league_path = os.path.join(MADDEN_UPLOADS_DIR, str(league_id))
+    try:
+        for entry in os.scandir(league_path):
+            if entry.is_dir() and re.fullmatch(r"season_\d+", entry.name):
+                candidates.append(int(entry.name.split("_")[1]))
+    except OSError as exc:
+        logger.warning("Unable to inspect rookie season directories: %s", exc)
+
+    return f"season_{max(candidates)}" if candidates else None
+
+
 def _madden_global_dir(league_id: str) -> str:
     return os.path.join(
         MADDEN_UPLOADS_DIR,
@@ -6940,12 +6961,19 @@ async def on_message(msg):
                         advance_time=datetime.now(pytz.utc).isoformat()
                     )
 
+                    rookie_season = get_rookie_stats_season(DEFAULT_LEAGUE_ID)
+                    rookie_url = f"https://wurd-madden.com/rookies?league={DEFAULT_LEAGUE_ID}"
+                    if rookie_season:
+                        rookie_url += f"&season={rookie_season}"
+                    else:
+                        logger.warning("No season found for rookie URL; website must select default season")
+
                     advance_block = (
                         "🏈 **PRESEASON WEEK 4 — CUT WEEK**\n"
                         "There are **no User-vs-User games** this week.\n"
                         "Game scheduling channels have been cleared.\n\n"
                         "🌟 **Top Rookie Preseason Stats** are now available on the WURD website.\n"
-                        f"https://wurd-madden.com/rookies?league={DEFAULT_LEAGUE_ID}&season=season_0\n\n"
+                        f"{rookie_url}\n\n"
                         "⏰ **Advance Time**\n"
                         "The league is scheduled to advance on\n"
                         f"**{advance.strftime('%A, %b %d @ ~%I:%M %p')} AZ**\n"

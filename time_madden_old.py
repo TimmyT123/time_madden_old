@@ -1,4 +1,5 @@
-# VERSION: time_madden_old_v20.py
+# VERSION: time_madden_old_v21_ROUTING_TEST.py
+# v21 TEST: Route advances and GG to separate MacroDroid webhooks. Do not deploy until advance macro is verified.
 # v20 CHANGE: Rookie preseason URL uses the newest Madden upload season, not hardcoded season_0.
 # v19 CHANGE: Power Rankings no longer auto-post in the advance channel; !powerrankings remains available on demand.
 # v18 CHANGE: Matchup channels now show the scheduled advance immediately below the welcome message, converted to the participating users' timezone(s).
@@ -2146,14 +2147,22 @@ def normalize_matchup_with_learned(t1: str | None, t2: str | None, author=None) 
         t1, t2 = order_by_advance(t1, t2)
     return t1, t2
 
-MACRODROID_ADVANCE_URL = "https://trigger.macrodroid.com/0173acce-c77b-4627-9c87-25fb2f03d580/wurd_advance"
+# v21: GG uses the verified single-week Controller v2.1.
+# A week advance uses a DIFFERENT MacroDroid trigger for previous + current exports.
+MACRODROID_GG_URL = "https://trigger.macrodroid.com/0173acce-c77b-4627-9c87-25fb2f03d580/wurd_advance"
+MACRODROID_WEEK_ADVANCE_URL = "https://trigger.macrodroid.com/0173acce-c77b-4627-9c87-25fb2f03d580/wurd_week_advance"
 
-def trigger_macrodroid_advance():
+def trigger_macrodroid_advance(kind="gg"):
+    if kind not in ("gg", "advance"):
+        logger.error("Invalid WURD export kind: %s", kind)
+        return
+    url = MACRODROID_WEEK_ADVANCE_URL if kind == "advance" else MACRODROID_GG_URL
     try:
-        r = requests.get(MACRODROID_ADVANCE_URL, timeout=5)
-        logger.info(f"MacroDroid webhook sent. Status: {r.status_code}")
+        r = requests.get(url, timeout=5)
+        logger.info("MacroDroid %s webhook sent. Status: %s", kind, r.status_code)
+        r.raise_for_status()
     except Exception as e:
-        logger.error(f"MacroDroid webhook failed: {e}")
+        logger.error("MacroDroid %s webhook failed: %s", kind, e)
 
 
 # The trigger: on_thread_create (new block)
@@ -6459,9 +6468,9 @@ async def safe_async_sleep(sec: float):
 
 # ---------------------------------------------------------------
 async def trigger_companion_export():
+    # Preserve the existing 5-minute wait after the Discord advance.
     await asyncio.sleep(300)
-
-    trigger_macrodroid_advance()
+    trigger_macrodroid_advance(kind="advance")
 
 # ---------------------------------------------------------------
 
@@ -6488,8 +6497,8 @@ async def retry_export_until_changed():
         previous_hash = get_stats_hash()
 
         for attempt in range(EXPORT_MAX_ATTEMPTS):
-            trigger_macrodroid_advance()
-            logger.info(f"Export attempt {attempt + 1} sent.")
+            trigger_macrodroid_advance(kind="gg")
+            logger.info(f"GG export attempt {attempt + 1} sent.")
 
             await asyncio.sleep(EXPORT_RETRY_DELAY)
 

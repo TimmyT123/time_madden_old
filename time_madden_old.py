@@ -32,6 +32,7 @@ import logging
 import requests
 import hashlib
 import shutil
+import game_scheduler
 
 from nextcord import File, AllowedMentions
 
@@ -119,6 +120,7 @@ EXPORT_MAX_ATTEMPTS = 5
 EXPORT_RETRY_DELAY = 120  # seconds
 
 startup_loops_started = False
+game_scheduler_view_registered = False
 members_synced_on_startup = False
 personality_loop_started = False
 
@@ -3373,8 +3375,14 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
 
             await channel.send("\u200b")  # zero-width space
 
-            # Scheduling reminder
-            await channel.send("👍 **Let’s get a specific game time locked in.**")
+            # Scheduling: persistent two-player approval panel (Discord only v0.1).
+            try:
+                await game_scheduler.create_panel(
+                    channel, member_ids, team_name,
+                    league_id=DEFAULT_LEAGUE_ID, week=_current_week
+                )
+            except Exception as e:
+                logger.exception("Could not create game scheduling panel in %s: %s", channel.name, e)
 
             # Mention reminder
             await channel.send("**Reminder:** Please **@mention** your opponent — some users won’t see messages otherwise.")
@@ -6226,6 +6234,7 @@ async def debug_advance(ctx):
 async def on_ready():
     global personality_loop_started
     global startup_loops_started
+    global game_scheduler_view_registered
     global members_synced_on_startup
     global _current_week, _current_pairs, _current_matchups
 
@@ -6247,6 +6256,11 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Error during bot startup: {e}")
         return
+
+    # Register persistent scheduling buttons on every startup/reconnect.
+    if not game_scheduler_view_registered:
+        game_scheduler.setup(bot, _load_scheduled_advance_info, lambda uid: is_on_ap(uid, load_ap_users()))
+        game_scheduler_view_registered = True
 
     # Rebuild channel activity
     try:
@@ -6270,6 +6284,7 @@ async def on_ready():
         bot.loop.create_task(ap_return_reminder_loop())
         bot.loop.create_task(ap_trigger_watcher())
         bot.loop.create_task(game_ai_day2_watcher_loop())
+        bot.loop.create_task(game_scheduler.reminder_loop(bot))
 
         # start inactivity loop
         # bot.loop.create_task(check_inactivity())  # This is turned off for now

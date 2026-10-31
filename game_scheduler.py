@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -16,6 +17,8 @@ import nextcord
 AZ = ZoneInfo('America/Phoenix')
 STATE_FILE = Path(os.getenv('WURD_GAME_SCHEDULE_FILE', 'data/game_schedules.json'))
 LOG = logging.getLogger('discord_bot')
+EXPORT_ROOT = Path(os.getenv('WURD_MADDEN_UPLOADS_DIR', '/home/pi/projects/madden_flask_app/uploads'))
+
 _LOCK = asyncio.Lock()
 _BOT = None
 _ADVANCE_READER = None
@@ -268,6 +271,76 @@ async def create_panel(channel, member_ids, matchup, league_id=None, season=None
         _save(data)
 
 
+
+def _simple_name(value):
+    return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
+
+
+def _team_aliases(info):
+    if not isinstance(info, dict):
+        return set()
+    out = set()
+    for key in ('nickName', 'nickname', 'name', 'displayName', 'teamName', 'abbr', 'abbrName', 'teamAbbr'):
+        val = info.get(key)
+        if val:
+            out.add(_simple_name(val))
+            # Team-map names can contain the city, such as "Buffalo Bills".
+            out.add(_simple_name(str(val).split()[-1]))
+    return out - {''}
+
+
+def exported_game_completed(rec):
+    """True only when the current export unambiguously identifies this completed matchup.
+
+    Unknown/missing/stale/wrong-week data returns False (reminder stays enabled).
+    The current `_latest.json` pointer selects the actual active league rather than
+    relying on older fallback DEFAULT_LEAGUE_ID values in either process.
+    """
+    try:
+        latest_path = EXPORT_ROOT / '_latest.json'
+        latest = json.loads(latest_path.read_text(encoding='utf-8'))
+        league = str(latest.get('league') or '')
+        season = str(latest.get('season') or '')
+        period = str(latest.get('week') or '').lower()
+        if not league or not re.fullmatch(r'season_\d+', season):
+            return False
+        if not re.fullmatch(r'(?:pre|week)_\d+', period):
+            return False
+        # Never use an old week or season's result for a current reminder.
+        rec_week = rec.get('week')
+        if rec_week is None or str(rec_week) != period.rsplit('_', 1)[-1]:
+            return False
+        # Matchup channels use the two team nicknames, e.g. bills-jets.
+        channel_parts = re.split(r'[-_]', str(rec.get('matchup') or '').lower())
+        if len(channel_parts) != 2:
+            return False
+        wanted = [_simple_name(x) for x in channel_parts]
+        if not all(wanted) or wanted[0] == wanted[1]:
+            return False
+        schedule = json.loads((EXPORT_ROOT / league / season / period / 'parsed_schedule.json').read_text(encoding='utf-8'))
+        team_map = json.loads((EXPORT_ROOT / league / 'team_map.json').read_text(encoding='utf-8'))
+        if not isinstance(schedule, list) or not isinstance(team_map, dict):
+            return False
+        # Resolve both names independently and uniquely to exported team IDs.
+        matched_ids = []
+        for name in wanted:
+            ids = [str(tid) for tid, info in team_map.items() if name in _team_aliases(info)]
+            if len(ids) != 1:
+                return False
+            matched_ids.append(ids[0])
+        if matched_ids[0] == matched_ids[1]:
+            return False
+        desired = set(matched_ids)
+        matches = [game for game in schedule if isinstance(game, dict) and
+                   {str(game.get('homeTeamId')), str(game.get('awayTeamId'))} == desired]
+        if len(matches) != 1:
+            return False
+        return bool(matches[0].get('completedAt'))
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        LOG.info('[SCHEDULER] Completion check unavailable; keeping reminder: %s', exc)
+        return False
+
+
 async def reminder_loop(bot, poll_seconds=30):
     await bot.wait_until_ready()
     while not bot.is_closed():
@@ -285,6 +358,13 @@ async def reminder_loop(bot, poll_seconds=30):
                         due.append((cid, rec))
                 for cid, rec in due:
                     channel = bot.get_channel(int(cid))
+                    if channel and exported_game_completed(rec):
+                        data[cid]['reminder_sent'] = True
+                        data[cid]['completed_from_export'] = True
+                        data[cid].setdefault('history', []).append({'at': _stamp(), 'action': 'skipped_reminder_game_completed'})
+                        _save(data)
+                        LOG.info('[SCHEDULER] Skipped reminder; exported game is complete for %s', rec.get('matchup'))
+                        continue
                     if not channel:
                         continue  # deleted/advanced channels never trigger notifications
                     try:

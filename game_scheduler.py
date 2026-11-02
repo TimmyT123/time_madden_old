@@ -1,7 +1,7 @@
 """WURD official matchup scheduling v0.1 (Discord only).
 
 Persistent buttons, Arizona-time proposals, two-party confirmation, broadcast flags,
-15-minute reminders, and atomic JSON storage. No league advances are triggered.
+20-minute reminders, matchup-specific timestamps, and atomic JSON storage. No league advances are triggered.
 """
 import asyncio
 import json
@@ -15,6 +15,41 @@ from zoneinfo import ZoneInfo
 import nextcord
 
 AZ = ZoneInfo('America/Phoenix')
+# Timezone codes use IANA zones, so daylight-saving changes are automatic.
+PLAYER_ZONES = {
+    'AZ': 'America/Phoenix', 'ARIZONA': 'America/Phoenix',
+    'ET': 'America/New_York', 'EST': 'America/New_York', 'EDT': 'America/New_York',
+    'CT': 'America/Chicago', 'CST': 'America/Chicago', 'CDT': 'America/Chicago',
+    'MT': 'America/Denver', 'MST': 'America/Denver', 'MDT': 'America/Denver',
+    'PT': 'America/Los_Angeles', 'PST': 'America/Los_Angeles', 'PDT': 'America/Los_Angeles',
+}
+
+def _parse_player_kickoff(date_text, time_text, zone_text):
+    zone_key = zone_text.strip().upper()
+    if zone_key not in PLAYER_ZONES:
+        raise ValueError('Use AZ, ET, CT, MT, or PT for your timezone.')
+    zone = ZoneInfo(PLAYER_ZONES[zone_key])
+    # Year is deliberately inferred; choose the next occurrence within 12 months.
+    today = datetime.now(zone)
+    date_bits = date_text.strip()
+    if not re.fullmatch(r'\d{1,2}/\d{1,2}', date_bits):
+        raise ValueError('Enter a date like 11/1 (month/day).')
+    month, day = map(int, date_bits.split('/'))
+    parsed_time = datetime.strptime(time_text.strip().upper().replace(' ', ''), '%I:%M%p')
+    for year in (today.year, today.year + 1):
+        try:
+            naive = datetime(year, month, day, parsed_time.hour, parsed_time.minute)
+        except ValueError:
+            raise ValueError('Invalid calendar date.')
+        local = naive.replace(tzinfo=zone)
+        # Reject nonexistent local wall times around the spring DST transition.
+        roundtrip = local.astimezone(timezone.utc).astimezone(zone)
+        if (roundtrip.hour, roundtrip.minute, roundtrip.date()) != (local.hour, local.minute, local.date()):
+            raise ValueError('That local time does not exist due to a daylight-saving change.')
+        if local > today + timedelta(minutes=1):
+            return local
+    raise ValueError('Choose a future date and time.')
+
 STATE_FILE = Path(os.getenv('WURD_GAME_SCHEDULE_FILE', 'data/game_schedules.json'))
 LOG = logging.getLogger('discord_bot')
 EXPORT_ROOT = Path(os.getenv('WURD_MADDEN_UPLOADS_DIR', '/home/pi/projects/madden_flask_app/uploads'))
@@ -59,7 +94,7 @@ def _display(rec):
     if proposed:
         dt = datetime.fromisoformat(proposed)
         kickoff = f'<t:{int(dt.timestamp())}:F> (<t:{int(dt.timestamp())}:R>)'
-        status = '✅ **OFFICIAL — both confirmed**' if confirmed else '🟠 **Proposed — awaiting both confirmations**'
+        status = '✅ **OFFICIAL — both confirmed**' if confirmed else '🟠 **Proposed — awaiting opponent confirmation**'
     else:
         kickoff = 'Not proposed yet'
         status = '⚪ **Unscheduled**'
@@ -80,9 +115,9 @@ def _display(rec):
             f'{status}\n**Kickoff:** {kickoff}\n'
             f'**Confirmations:**\n{approvals}\n'
             f'**Broadcasting this game:**\n{broadcasts}\n\n'
-            'Use **Propose / Change Time** to enter an Arizona kickoff time. '
+            'Use **Propose / Change Time** to enter your local time and timezone. '
             'The other player must confirm. Broadcasting is optional. '
-            'The bot will mention both players 15 minutes before a confirmed kickoff.')
+            'The bot will mention both players 20 minutes before a confirmed kickoff.')
 
 
 async def _refresh(channel, rec):
@@ -122,21 +157,23 @@ def _on_ap(uid):
 
 class ProposeModal(nextcord.ui.Modal):
     def __init__(self):
-        super().__init__(title='Propose WURD kickoff (Arizona time)', custom_id='wurd:schedule:modal:v1')
-        self.day = nextcord.ui.TextInput(label='Date (YYYY-MM-DD)', placeholder='2026-11-01', min_length=10, max_length=10)
-        self.clock = nextcord.ui.TextInput(label='Arizona time (HH:MM, 24-hour)', placeholder='19:30', min_length=5, max_length=5)
+        super().__init__(title='Propose WURD kickoff', custom_id='wurd:schedule:modal:v1')
+        self.day = nextcord.ui.TextInput(label='Date (MM/DD)', placeholder='11/1', min_length=3, max_length=5)
+        self.clock = nextcord.ui.TextInput(label='Time (12-hour AM/PM)', placeholder='11:00 AM', min_length=6, max_length=8)
+        self.zone = nextcord.ui.TextInput(label='Your timezone (AZ, ET, CT, MT, PT)', placeholder='AZ', min_length=2, max_length=7)
         self.add_item(self.day)
         self.add_item(self.clock)
+        self.add_item(self.zone)
 
     async def callback(self, interaction):
         channel = interaction.channel
         cid = str(channel.id)
         try:
-            local_dt = datetime.strptime(f'{self.day.value.strip()} {self.clock.value.strip()}', '%Y-%m-%d %H:%M').replace(tzinfo=AZ)
-        except ValueError:
-            await interaction.response.send_message('Use a real date YYYY-MM-DD and time HH:MM (Arizona, 24-hour clock).', ephemeral=True)
+            local_dt = _parse_player_kickoff(self.day.value, self.clock.value, self.zone.value)
+        except ValueError as exc:
+            await interaction.response.send_message(f'Invalid kickoff: {exc}', ephemeral=True)
             return
-        if local_dt <= datetime.now(AZ) + timedelta(minutes=1):
+        if local_dt <= datetime.now(timezone.utc) + timedelta(minutes=1):
             await interaction.response.send_message('Choose a future kickoff, at least two minutes from now.', ephemeral=True)
             return
         deadline = _advance_deadline()
@@ -218,7 +255,7 @@ class SchedulingView(nextcord.ui.View):
         await _refresh(interaction.channel, rec)
         if len(rec['confirmed']) == 2 and not rec.get('pending_kickoff_utc'):
             ts = int(datetime.fromisoformat(rec['kickoff_utc']).timestamp())
-            await interaction.channel.send(f'✅ **OFFICIAL KICKOFF CONFIRMED** — <t:{ts}:F>. Both players agreed. A 15-minute reminder will be sent.', allowed_mentions=nextcord.AllowedMentions.none())
+            await interaction.channel.send(f'✅ **OFFICIAL KICKOFF CONFIRMED** — <t:{ts}:F>. Both players agreed. A 20-minute reminder will be sent.', allowed_mentions=nextcord.AllowedMentions.none())
 
     async def _broadcast(self, interaction, value):
         cid = str(interaction.channel_id)
@@ -354,7 +391,7 @@ async def reminder_loop(bot, poll_seconds=30):
                     if not kickoff or rec.get('reminder_sent') or len(rec.get('confirmed', [])) != 2:
                         continue
                     dt = datetime.fromisoformat(kickoff)
-                    if dt - timedelta(minutes=15) <= now < dt and not any(_on_ap(uid) for uid in rec['users']):
+                    if dt - timedelta(minutes=20) <= now < dt and not any(_on_ap(uid) for uid in rec['users']):
                         due.append((cid, rec))
                 for cid, rec in due:
                     channel = bot.get_channel(int(cid))
@@ -370,10 +407,14 @@ async def reminder_loop(bot, poll_seconds=30):
                     try:
                         # Set sent first, so restart/error cannot duplicate a mention.
                         data[cid]['reminder_sent'] = True
-                        data[cid].setdefault('history', []).append({'at': _stamp(), 'action': 'reminder_15m'})
+                        data[cid].setdefault('history', []).append({'at': _stamp(), 'action': 'reminder_20m'})
                         _save(data)
                         mentions = ' '.join(f'<@{uid}>' for uid in rec['users'])
-                        ts = int(datetime.fromisoformat(kickoff).timestamp())
+                        # IMPORTANT: kickoff from the previous scanning loop belongs to
+                        # its final record, not necessarily this due matchup.
+                        # Always derive the timestamp from the CURRENT record.
+                        reminder_kickoff = datetime.fromisoformat(rec['kickoff_utc'])
+                        ts = int(reminder_kickoff.timestamp())
                         await channel.send(f'⏰ **GAME TIME REMINDER** {mentions}\nYour confirmed kickoff is <t:{ts}:t> (<t:{ts}:R>). Get ready!', allowed_mentions=nextcord.AllowedMentions(users=True))
                     except (nextcord.Forbidden, nextcord.HTTPException) as exc:
                         LOG.warning('[SCHEDULER] Reminder send failed in %s: %s', cid, exc)

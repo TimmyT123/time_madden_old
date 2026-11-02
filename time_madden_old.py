@@ -631,11 +631,38 @@ async def pre_advance_reminder_loop():
                         logger.info(f"[24H REMINDER SKIP] {ch.name} has AP user(s), skipping.")
                         continue
 
-                    # Normal non-responder logic
-                    non_responders = [
-                        mid for mid in member_ids
-                        if mid not in tracker["responses"]
-                    ]
+                    # WURD Game Scheduler integration: button confirmations are
+                    # commitments, even when a player has not typed in chat.
+                    # Match by channel ID and week to avoid using stale records.
+                    schedule_rec = game_scheduler._load().get(str(ch.id))
+                    if schedule_rec:
+                        record_week = schedule_rec.get("week")
+                        record_users = {int(uid) for uid in schedule_rec.get("users", [])}
+                        if str(record_week) != str(week) or record_users != set(member_ids):
+                            schedule_rec = None
+
+                    if schedule_rec:
+                        # Completed game: never send an availability warning.
+                        if game_scheduler.exported_game_completed(schedule_rec):
+                            logger.info("[24H REMINDER SKIP] %s game already completed.", ch.name)
+                            continue
+
+                        official = (bool(schedule_rec.get("kickoff_utc"))
+                                    and len(set(schedule_rec.get("confirmed", []))) == 2)
+                        if official:
+                            logger.info("[24H REMINDER SKIP] %s has an official kickoff.", ch.name)
+                            continue
+
+                        # A pending time proposal does not constitute agreement.
+                        # Remind only the player(s) who have not confirmed it.
+                        if schedule_rec.get("kickoff_utc"):
+                            approvals = set(schedule_rec.get("confirmed", []))
+                            non_responders = [uid for uid in member_ids if uid not in approvals]
+                        else:
+                            non_responders = [uid for uid in member_ids if uid not in tracker["responses"]]
+                    else:
+                        # Preserve the original behavior for legacy channels.
+                        non_responders = [uid for uid in member_ids if uid not in tracker["responses"]]
 
                     if not non_responders:
                         continue
@@ -646,14 +673,24 @@ async def pre_advance_reminder_loop():
                         if guild.get_member(mid)
                     )
 
-                    await ch.send(
-                        f"🔔 **24-Hour Scheduling Reminder**\n"
-                        f"{mentions}\n"
-                        "Advance is approaching tomorrow.\n"
-                        "Please confirm scheduling.\n"
-                        "Failure to communicate may result in AP status.",
-                        allowed_mentions=AllowedMentions(users=True)
-                    )
+                    awaiting_proposal = bool(schedule_rec and schedule_rec.get("kickoff_utc"))
+                    if awaiting_proposal:
+                        reminder_message = (
+                            "🔔 **24-Hour Game Time Confirmation Reminder**\n"
+                            f"{mentions}\n"
+                            "A kickoff has been proposed, but you haven't confirmed it. "
+                            "Please review the time and click **Confirm Time** if you agree, "
+                            "or propose another time. The existing WURD scheduling rules still apply."
+                        )
+                    else:
+                        reminder_message = (
+                            "🔔 **24-Hour Scheduling Reminder**\n"
+                            f"{mentions}\n"
+                            "Advance is approaching tomorrow.\n"
+                            "Please confirm scheduling.\n"
+                            "Failure to communicate may result in AP status."
+                        )
+                    await ch.send(reminder_message, allowed_mentions=AllowedMentions(users=True))
 
                     await asyncio.sleep(1.2)
 
@@ -3379,7 +3416,9 @@ async def create_channel_helper(guild, team_name, member_ids, ctx=None, message_
             try:
                 await game_scheduler.create_panel(
                     channel, member_ids, team_name,
-                    league_id=DEFAULT_LEAGUE_ID, week=_current_week
+                    league_id=get_latest_league_id(),
+                    season=(json.load(open(os.path.join(MADDEN_UPLOADS_DIR, "_latest.json"))).get("season") if os.path.isfile(os.path.join(MADDEN_UPLOADS_DIR, "_latest.json")) else None),
+                    week=_current_week
                 )
             except Exception as e:
                 logger.exception("Could not create game scheduling panel in %s: %s", channel.name, e)

@@ -1,4 +1,5 @@
-# VERSION: time_madden_old_v21_ROUTING_TEST.py
+# VERSION: time_madden_old_v22.2_S20_DM.py
+# v22.2: !s20 operates in authorized bot DMs; no control channel required.
 # v21 TEST: Route advances and GG to separate MacroDroid webhooks. Do not deploy until advance macro is verified.
 # v20 CHANGE: Rookie preseason URL uses the newest Madden upload season, not hardcoded season_0.
 # v19 CHANGE: Power Rankings no longer auto-post in the advance channel; !powerrankings remains available on demand.
@@ -2204,15 +2205,13 @@ def trigger_macrodroid_advance(kind="gg"):
         logger.error("MacroDroid %s webhook failed: %s", kind, e)
 
 
-# === S20 SINGLE-WEEK REMOTE EXPORT (bot v22.1; dedicated MacroDroid receiver) ===
+# === S20 SINGLE-WEEK REMOTE EXPORT (bot v22.2; authorized DM only) ===
 # Never use the existing wurd_advance / wurd_week_advance hooks here: those
 # have different purposes and are NOT safe substitutes for single-week export.
 # Set these in the bot .env only AFTER installing a dedicated S20 receiver:
 # WURD_S20_SINGLE_WEEK_WEBHOOK_URL=https://trigger.macrodroid.com/YOUR-S20-DEVICE-ID/wurd_single_week
-# WURD_S20_CONTROL_CHANNEL_ID=<private channel ID>
 # WURD_S20_ALLOWED_USERS=<comma-separated commissioner Discord user IDs>
 WURD_S20_SINGLE_WEEK_WEBHOOK_URL = os.getenv("WURD_S20_SINGLE_WEEK_WEBHOOK_URL", "").strip()
-WURD_S20_CONTROL_CHANNEL_ID = int(os.getenv("WURD_S20_CONTROL_CHANNEL_ID", "0") or 0)
 WURD_S20_ALLOWED_USERS = {
     int(uid.strip()) for uid in os.getenv("WURD_S20_ALLOWED_USERS", "").split(",")
     if uid.strip().isdigit()
@@ -2221,19 +2220,15 @@ _wurd_s20_request_lock = asyncio.Lock()
 
 @bot.group(name="s20", invoke_without_command=True)
 async def wurd_s20(ctx):
-    if ctx.guild is None or ctx.guild.id != GUILD_ID or ctx.channel.id != WURD_S20_CONTROL_CHANNEL_ID:
-        return
-    if ctx.author.id not in WURD_S20_ALLOWED_USERS:
+    if ctx.guild is not None or ctx.author.id not in WURD_S20_ALLOWED_USERS:
         return
     await ctx.send("Use `!s20 week 4` to request a single-week export. This does not advance the league.",
                    allowed_mentions=AllowedMentions.none())
 
 @wurd_s20.command(name="week")
 async def wurd_s20_week(ctx, week: int):
-    # Fail closed; no role-wide access and no commands outside the private channel.
-    if (ctx.guild is None or ctx.guild.id != GUILD_ID or
-            not WURD_S20_CONTROL_CHANNEL_ID or ctx.channel.id != WURD_S20_CONTROL_CHANNEL_ID or
-            ctx.author.id not in WURD_S20_ALLOWED_USERS):
+    # Fail closed: only explicitly authorized accounts in bot DMs.
+    if ctx.guild is not None or ctx.author.id not in WURD_S20_ALLOWED_USERS:
         return
     if not 1 <= week <= 18:
         await ctx.send("Only regular-season Weeks 1–18 are supported for this command.")

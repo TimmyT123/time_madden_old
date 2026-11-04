@@ -2204,11 +2204,11 @@ def trigger_macrodroid_advance(kind="gg"):
         logger.error("MacroDroid %s webhook failed: %s", kind, e)
 
 
-# === S20 SINGLE-WEEK REMOTE EXPORT (bot v22; requires separately configured phone receiver) ===
+# === S20 SINGLE-WEEK REMOTE EXPORT (bot v22.1; dedicated MacroDroid receiver) ===
 # Never use the existing wurd_advance / wurd_week_advance hooks here: those
 # have different purposes and are NOT safe substitutes for single-week export.
 # Set these in the bot .env only AFTER installing a dedicated S20 receiver:
-# WURD_S20_SINGLE_WEEK_WEBHOOK_URL=https://trigger.macrodroid.com/.../wurd_single_week
+# WURD_S20_SINGLE_WEEK_WEBHOOK_URL=https://trigger.macrodroid.com/YOUR-S20-DEVICE-ID/wurd_single_week
 # WURD_S20_CONTROL_CHANNEL_ID=<private channel ID>
 # WURD_S20_ALLOWED_USERS=<comma-separated commissioner Discord user IDs>
 WURD_S20_SINGLE_WEEK_WEBHOOK_URL = os.getenv("WURD_S20_SINGLE_WEEK_WEBHOOK_URL", "").strip()
@@ -2250,11 +2250,11 @@ async def wurd_s20_week(ctx, week: int):
         await ctx.send("Another request is being submitted. Try again after it is acknowledged.")
         return
     async with _wurd_s20_request_lock:
-        # Our dedicated S20 macro must read 'week' and validate against the chosen week on screen.
+        # Dedicated webhook supplies integer WURD_S20_WEEK; macro validates 1..18 and confirms on-screen week.
         # HTTP success means webhook delivery only, NOT export completion.
         try:
             def _send():
-                return requests.get(clean_url, params={"week": str(week)}, timeout=8)
+                return requests.get(clean_url, params={"WURD_S20_WEEK": str(week)}, timeout=8)
             response = await asyncio.to_thread(_send)
             response.raise_for_status()
         except Exception as exc:

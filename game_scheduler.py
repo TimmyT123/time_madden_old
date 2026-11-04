@@ -1,4 +1,4 @@
-"""WURD official matchup scheduling v0.1 (Discord only).
+"""WURD official matchup scheduling v0.2 (Discord and website JSON).
 
 Persistent buttons, Arizona-time proposals, two-party confirmation, broadcast flags,
 20-minute reminders, matchup-specific timestamps, and atomic JSON storage. No league advances are triggered.
@@ -86,38 +86,78 @@ def _stamp():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _member_zone(uid):
+    """Resolve the saved nickname timezone; no question in the proposal form."""
+    if _BOT:
+        for guild in _BOT.guilds:
+            member = guild.get_member(uid)
+            if member:
+                name = member.display_name or ''
+                match = re.search(r'\b(PT|AZ|MT|CT|ET)\b\s*$', name, re.I)
+                if match:
+                    code = match.group(1).upper()
+                    return code, ZoneInfo(PLAYER_ZONES[code])
+    return None, None
+
+
+def _kickoff_lines(rec, value):
+    utc_dt = datetime.fromisoformat(value)
+    lines = []
+    for uid in rec['users']:
+        code, zone = _member_zone(uid)
+        if zone is None:
+            lines.append(f'<@{uid}>: timezone not set in Discord nickname')
+            continue
+        local = utc_dt.astimezone(zone)
+        lines.append(f'<@{uid}> ({code}): **{local.strftime("%a, %b %d, %I:%M %p").replace(" 0", " ")}**')
+    return '\n'.join(lines)
+
+
+def _extension_note(rec, value):
+    deadline = _advance_deadline()
+    if not deadline or not value or datetime.fromisoformat(value) < deadline:
+        return ''
+    approved = rec.get('extension_approved_for') == value
+    status = '✅ **Commissioner extension approved**' if approved else '⚠️ **KICKOFF AT/AFTER ADVANCE — commissioner approval required**'
+    return (f'\n{status}\n'
+            f'League advance: **{deadline.strftime("%a, %b %d, %I:%M %p").replace(" 0", " ")} AZ**. '
+            'A kickoff proposal does not delay advance.')
+
+
 def _display(rec):
-    users = rec['users']
     proposed = rec.get('kickoff_utc')
-    confirmed = proposed and len(rec.get('confirmed', [])) == 2
     pending = rec.get('pending_kickoff_utc')
+    confirmed = bool(proposed and len(set(rec.get('confirmed', []))) == 2)
     if proposed:
-        dt = datetime.fromisoformat(proposed)
-        kickoff = f'<t:{int(dt.timestamp())}:F> (<t:{int(dt.timestamp())}:R>)'
-        status = '✅ **OFFICIAL — both confirmed**' if confirmed else '🟠 **Proposed — awaiting opponent confirmation**'
+        expired = datetime.fromisoformat(proposed) <= datetime.now(timezone.utc)
+        if confirmed:
+            status = '✅ **OFFICIAL — both confirmed**'
+        elif expired:
+            status = '⚠️ **Proposal expired — propose a new kickoff**'
+        else:
+            status = '🟠 **PROPOSED — awaiting opponent confirmation**'
+        kickoff = _kickoff_lines(rec, proposed)
     else:
-        kickoff = 'Not proposed yet'
         status = '⚪ **Unscheduled**'
+        kickoff = 'Not proposed yet'
+    lines = ['🏈 **WURD — Official Game Scheduling**',
+             f'**{rec.get("matchup", "Matchup")}**',status,
+             '**Kickoff (each player’s local timezone):**',kickoff]
+    if proposed:
+        lines.append(_extension_note(rec, proposed))
     if pending:
-        pending_ts = int(datetime.fromisoformat(pending).timestamp())
-        status += f'\n🟠 **Change proposed:** <t:{pending_ts}:F> — awaiting both approvals'
-    approval_ids = rec.get('pending_confirmed', []) if pending else rec.get('confirmed', [])
-    approvals = '\n'.join(
-        f'<@{uid}>: {"✅ Confirmed" if uid in approval_ids else "⏳ Awaiting confirmation"}'
-        for uid in users
-    )
-    broadcasts = '\n'.join(
-        f'<@{uid}>: {"📺 Yes" if rec.get("broadcast", {}).get(str(uid)) is True else "No" if rec.get("broadcast", {}).get(str(uid)) is False else "Not selected"}'
-        for uid in users
-    )
-    return (f'🏈 **WURD — Official Game Scheduling**\n'
-            f'**{rec.get("matchup", "Matchup")}**\n'
-            f'{status}\n**Kickoff:** {kickoff}\n'
-            f'**Confirmations:**\n{approvals}\n'
-            f'**Broadcasting this game:**\n{broadcasts}\n\n'
-            'Use **Propose / Change Time** to enter your local time and timezone. '
-            'The other player must confirm. Broadcasting is optional. '
-            'The bot will mention both players 20 minutes before a confirmed kickoff.')
+        lines += ['🟠 **CHANGE PROPOSED — awaiting both approvals:**', _kickoff_lines(rec,pending),_extension_note(rec,pending)]
+    approvals = rec.get('pending_confirmed', []) if pending else rec.get('confirmed', [])
+    lines.append('**Confirmations:**')
+    lines += [f'<@{uid}>: {"✅ Confirmed" if uid in approvals else "⏳ Awaiting confirmation"}' for uid in rec['users']]
+    lines.append('**Broadcasting this game:**')
+    for uid in rec['users']:
+        b = rec.get('broadcast', {}).get(str(uid))
+        lines.append(f'<@{uid}>: {"📺 Yes" if b is True else "No" if b is False else "Not selected"}')
+    lines += ['', 'Use **Propose / Change Time**. Enter the time in YOUR saved local timezone; '
+              'the bot converts it for both players. Both must confirm. Broadcasting is optional. '
+              'A 20-minute reminder is sent before confirmed kickoffs.']
+    return '\n'.join(x for x in lines if x is not None)
 
 
 async def _refresh(channel, rec):
@@ -155,55 +195,105 @@ def _on_ap(uid):
         return False
 
 
+def _parse_selected_time(day, clock, zone):
+    try:
+        parsed = datetime.strptime(clock.strip().upper().replace(' ', ''), '%I:%M%p')
+    except ValueError:
+        raise ValueError('Use a time such as 9:30 PM.')
+    local = datetime(day.year,day.month,day.day,parsed.hour,parsed.minute,tzinfo=zone)
+    roundtrip = local.astimezone(timezone.utc).astimezone(zone)
+    if (roundtrip.date(),roundtrip.hour,roundtrip.minute)!=(local.date(),local.hour,local.minute):
+        raise ValueError('This local time does not exist because of daylight saving time.')
+    # Ambiguous fall-back hour is intentionally rejected rather than guessing.
+    if local.replace(fold=0).utcoffset() != local.replace(fold=1).utcoffset():
+        raise ValueError('That hour occurs twice due to daylight saving time. Pick an unambiguous time.')
+    return local
+
+
 class ProposeModal(nextcord.ui.Modal):
-    def __init__(self):
-        super().__init__(title='Propose WURD kickoff', custom_id='wurd:schedule:modal:v1')
-        self.day = nextcord.ui.TextInput(label='Date (MM/DD)', placeholder='11/1', min_length=3, max_length=5)
-        self.clock = nextcord.ui.TextInput(label='Time (12-hour AM/PM)', placeholder='11:00 AM', min_length=6, max_length=8)
-        self.zone = nextcord.ui.TextInput(label='Your timezone (AZ, ET, CT, MT, PT)', placeholder='AZ', min_length=2, max_length=7)
-        self.add_item(self.day)
+    def __init__(self, selected_day, zone_code, zone):
+        super().__init__(title=f'Kickoff on {selected_day.strftime("%a, %b %d")}', custom_id='wurd:schedule:modal:v2')
+        self.selected_day, self.zone = selected_day, zone
+        self.clock = nextcord.ui.TextInput(label=f'Your local time ({zone_code}) — HH:MM AM/PM', placeholder='9:30 PM', min_length=6,max_length=8)
         self.add_item(self.clock)
-        self.add_item(self.zone)
 
     async def callback(self, interaction):
         channel = interaction.channel
         cid = str(channel.id)
         try:
-            local_dt = _parse_player_kickoff(self.day.value, self.clock.value, self.zone.value)
+            local_dt = _parse_selected_time(self.selected_day,self.clock.value,self.zone)
         except ValueError as exc:
-            await interaction.response.send_message(f'Invalid kickoff: {exc}', ephemeral=True)
+            await interaction.response.send_message(f'Invalid kickoff: {exc}',ephemeral=True)
             return
-        if local_dt <= datetime.now(timezone.utc) + timedelta(minutes=1):
-            await interaction.response.send_message('Choose a future kickoff, at least two minutes from now.', ephemeral=True)
-            return
-        deadline = _advance_deadline()
-        if deadline and local_dt >= deadline:
-            await interaction.response.send_message(f'That time is after the league advance (<t:{int(deadline.timestamp())}:F>). Choose an earlier time.', ephemeral=True)
+        if local_dt <= datetime.now(timezone.utc)+timedelta(minutes=1):
+            await interaction.response.send_message('Choose a future kickoff at least two minutes from now.',ephemeral=True)
             return
         async with _LOCK:
             data = _load()
             rec = data.get(cid)
-            if not rec or not _allowed(rec, interaction.user.id):
-                await interaction.response.send_message('Only the two players in this matchup can propose a kickoff.', ephemeral=True)
+            if not rec or not _allowed(rec,interaction.user.id):
+                await interaction.response.send_message('Only matchup players can propose a kickoff.',ephemeral=True)
                 return
             if any(_on_ap(uid) for uid in rec['users']):
-                await interaction.response.send_message('Scheduling is disabled while a matchup player is on AP.', ephemeral=True)
+                await interaction.response.send_message('Scheduling is disabled while a player is on AP.',ephemeral=True)
                 return
             new_time = local_dt.astimezone(timezone.utc).isoformat()
-            if rec.get('kickoff_utc') and len(rec.get('confirmed', [])) == 2:
-                # Preserve the original official kickoff until both accept the change.
+            if rec.get('kickoff_utc') and len(set(rec.get('confirmed',[]))) == 2:
                 rec['pending_kickoff_utc'] = new_time
                 rec['pending_confirmed'] = [interaction.user.id]
             else:
                 rec['kickoff_utc'] = new_time
                 rec['confirmed'] = [interaction.user.id]
+                rec.pop('pending_kickoff_utc',None)
+                rec.pop('pending_confirmed',None)
                 rec['reminder_sent'] = False
-            rec.setdefault('history', []).append({'at': _stamp(), 'action': 'propose', 'by': interaction.user.id, 'kickoff_utc': new_time})
+                # A new unconfirmed proposal replaces the old proposal and its approval.
+                rec['extension_approved_for'] = None
+                rec['extension_approved_by'] = None
+            rec.setdefault('history',[]).append({'at':_stamp(),'action':'propose','by':interaction.user.id,'kickoff_utc':new_time})
             _save(data)
-        await interaction.response.send_message('Kickoff proposed. Your opponent must confirm it.', ephemeral=True)
-        await _refresh(channel, rec)
-        other = next(uid for uid in rec['users'] if uid != interaction.user.id)
-        await channel.send(f'<@{other}> — please review the proposed kickoff and click **Confirm Time** if you agree.', allowed_mentions=nextcord.AllowedMentions(users=True))
+        await interaction.response.send_message('Kickoff proposed. Your opponent must confirm it.',ephemeral=True)
+        await _refresh(channel,rec)
+        other = next(uid for uid in rec['users'] if uid!=interaction.user.id)
+        deadline = _advance_deadline()
+        late = bool(deadline and local_dt >= deadline)
+        mention = f'<@{other}>'
+        message = f'{mention} — please review the proposed kickoff and click **Confirm Time** if you agree.'
+        if late:
+            role_name = os.getenv('GAME_CHANNEL_COMMISSIONER_ROLE_NAME','Commissioner')
+            role = nextcord.utils.get(channel.guild.roles,name=role_name) if channel.guild else None
+            if role:
+                message += f'\n⚠️ {role.mention} — kickoff is at/after advance. Commissioner extension approval is required.'
+            else:
+                message += '\n⚠️ Kickoff is at/after advance. Please contact a commissioner for approval.'
+        await channel.send(message,allowed_mentions=nextcord.AllowedMentions(users=True,roles=late))
+
+
+class DayChoiceView(nextcord.ui.View):
+    """Temporary, private date buttons; persistent matchup panel remains unchanged."""
+    def __init__(self,uid,zone_code,zone):
+        super().__init__(timeout=180)
+        self.uid,self.zone_code,self.zone=uid,zone_code,zone
+        today=datetime.now(zone).date()
+        deadline=_advance_deadline()
+        advance_date=deadline.astimezone(zone).date() if deadline else None
+        options=[('Today',today)]
+        tomorrow=today+timedelta(days=1)
+        if not advance_date or tomorrow<=advance_date:
+            options.append(('Tomorrow'+(' (Advance Day)' if tomorrow==advance_date else ''),tomorrow))
+        if advance_date and advance_date>tomorrow:
+            options.append(('Advance Day',advance_date))
+        if advance_date==today:
+            options[0]=('Today (Advance Day)',today)
+        for i,(label,day) in enumerate(options):
+            button=nextcord.ui.Button(label=label,style=nextcord.ButtonStyle.primary if i==0 else nextcord.ButtonStyle.secondary,row=0)
+            async def select(interaction,selected=day):
+                if interaction.user.id != self.uid:
+                    await interaction.response.send_message('This date selection belongs to another player.',ephemeral=True)
+                    return
+                await interaction.response.send_modal(ProposeModal(selected,self.zone_code,self.zone))
+            button.callback=select
+            self.add_item(button)
 
 
 class SchedulingView(nextcord.ui.View):
@@ -216,7 +306,11 @@ class SchedulingView(nextcord.ui.View):
         if not rec or not _allowed(rec, interaction.user.id):
             await interaction.response.send_message('This button is for the two matchup players only.', ephemeral=True)
             return
-        await interaction.response.send_modal(ProposeModal())
+        code, zone = _member_zone(interaction.user.id)
+        if not zone:
+            await interaction.response.send_message('Your Discord nickname needs a timezone suffix (PT, AZ, MT, CT, or ET). Please ask a commissioner to set it.',ephemeral=True)
+            return
+        await interaction.response.send_message(f'Choose a kickoff day. All times you enter are **{code}** (your local timezone). Opponent times convert automatically.',view=DayChoiceView(interaction.user.id,code,zone),ephemeral=True)
 
     @nextcord.ui.button(label='Confirm Time', style=nextcord.ButtonStyle.success, custom_id='wurd:schedule:confirm:v1', row=0)
     async def confirm(self, button, interaction):
@@ -247,6 +341,10 @@ class SchedulingView(nextcord.ui.View):
                     rec['kickoff_utc'] = rec.pop('pending_kickoff_utc')
                     rec['confirmed'] = rec.pop('pending_confirmed')
                     rec['reminder_sent'] = False
+                    # Extension approval only carries forward when the approved timestamp matches.
+                    if rec.get('extension_approved_for') != rec['kickoff_utc']:
+                        rec['extension_approved_for'] = None
+                        rec['extension_approved_by'] = None
             else:
                 rec.setdefault('confirmed', []).append(interaction.user.id)
             rec.setdefault('history', []).append({'at': _stamp(), 'action': 'confirm', 'by': interaction.user.id})
@@ -256,6 +354,34 @@ class SchedulingView(nextcord.ui.View):
         if len(rec['confirmed']) == 2 and not rec.get('pending_kickoff_utc'):
             ts = int(datetime.fromisoformat(rec['kickoff_utc']).timestamp())
             await interaction.channel.send(f'✅ **OFFICIAL KICKOFF CONFIRMED** — <t:{ts}:F>. Both players agreed. A 20-minute reminder will be sent.', allowed_mentions=nextcord.AllowedMentions.none())
+
+    @nextcord.ui.button(label='Approve Late Kickoff',style=nextcord.ButtonStyle.secondary,custom_id='wurd:schedule:extension:v2',row=2)
+    async def approve_extension(self,button,interaction):
+        role_name=os.getenv('GAME_CHANNEL_COMMISSIONER_ROLE_NAME','Commissioner')
+        permitted = (interaction.guild is not None and
+                     (interaction.user.guild_permissions.administrator or
+                      any(role.name==role_name for role in interaction.user.roles)))
+        if not permitted:
+            await interaction.response.send_message('Only commissioners can approve a late kickoff.',ephemeral=True)
+            return
+        async with _LOCK:
+            data=_load()
+            rec=data.get(str(interaction.channel_id))
+            if not rec:
+                await interaction.response.send_message('No matchup schedule found.',ephemeral=True)
+                return
+            target=rec.get('pending_kickoff_utc') or rec.get('kickoff_utc')
+            deadline=_advance_deadline()
+            if not target or not deadline or datetime.fromisoformat(target)<deadline:
+                await interaction.response.send_message('No at/after-advance kickoff needs approval.',ephemeral=True)
+                return
+            rec['extension_approved_for']=target
+            rec['extension_approved_by']=interaction.user.id
+            rec.setdefault('history',[]).append({'at':_stamp(),'action':'extension_approved','by':interaction.user.id,'kickoff_utc':target})
+            _save(data)
+        await interaction.response.send_message('Commissioner approval recorded for this kickoff. This does not change the league advance time.',ephemeral=True)
+        await _refresh(interaction.channel,rec)
+        await interaction.channel.send(f'✅ Commissioner <@{interaction.user.id}> approved an extension for this scheduled kickoff. **The league advance time itself has not changed.**',allowed_mentions=nextcord.AllowedMentions.none())
 
     async def _broadcast(self, interaction, value):
         cid = str(interaction.channel_id)

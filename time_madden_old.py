@@ -2204,6 +2204,66 @@ def trigger_macrodroid_advance(kind="gg"):
         logger.error("MacroDroid %s webhook failed: %s", kind, e)
 
 
+# === S20 SINGLE-WEEK REMOTE EXPORT (bot v22; requires separately configured phone receiver) ===
+# Never use the existing wurd_advance / wurd_week_advance hooks here: those
+# have different purposes and are NOT safe substitutes for single-week export.
+# Set these in the bot .env only AFTER installing a dedicated S20 receiver:
+# WURD_S20_SINGLE_WEEK_WEBHOOK_URL=https://trigger.macrodroid.com/.../wurd_single_week
+# WURD_S20_CONTROL_CHANNEL_ID=<private channel ID>
+# WURD_S20_ALLOWED_USERS=<comma-separated commissioner Discord user IDs>
+WURD_S20_SINGLE_WEEK_WEBHOOK_URL = os.getenv("WURD_S20_SINGLE_WEEK_WEBHOOK_URL", "").strip()
+WURD_S20_CONTROL_CHANNEL_ID = int(os.getenv("WURD_S20_CONTROL_CHANNEL_ID", "0") or 0)
+WURD_S20_ALLOWED_USERS = {
+    int(uid.strip()) for uid in os.getenv("WURD_S20_ALLOWED_USERS", "").split(",")
+    if uid.strip().isdigit()
+}
+_wurd_s20_request_lock = asyncio.Lock()
+
+@bot.group(name="s20", invoke_without_command=True)
+async def wurd_s20(ctx):
+    if ctx.guild is None or ctx.guild.id != GUILD_ID or ctx.channel.id != WURD_S20_CONTROL_CHANNEL_ID:
+        return
+    if ctx.author.id not in WURD_S20_ALLOWED_USERS:
+        return
+    await ctx.send("Use `!s20 week 4` to request a single-week export. This does not advance the league.",
+                   allowed_mentions=AllowedMentions.none())
+
+@wurd_s20.command(name="week")
+async def wurd_s20_week(ctx, week: int):
+    # Fail closed; no role-wide access and no commands outside the private channel.
+    if (ctx.guild is None or ctx.guild.id != GUILD_ID or
+            not WURD_S20_CONTROL_CHANNEL_ID or ctx.channel.id != WURD_S20_CONTROL_CHANNEL_ID or
+            ctx.author.id not in WURD_S20_ALLOWED_USERS):
+        return
+    if not 1 <= week <= 18:
+        await ctx.send("Only regular-season Weeks 1–18 are supported for this command.")
+        return
+    if not WURD_S20_SINGLE_WEEK_WEBHOOK_URL.startswith("https://trigger.macrodroid.com/"):
+        await ctx.send("S20 remote receiver is not configured. Nothing was triggered.")
+        return
+    # Explicitly reject any webhook used for a league advance or the GG exporter.
+    clean_url = WURD_S20_SINGLE_WEEK_WEBHOOK_URL.split("?", 1)[0].rstrip("/")
+    if clean_url.rsplit("/", 1)[-1] != "wurd_single_week":
+        await ctx.send("Unsafe remote receiver URL configuration. Nothing was triggered.")
+        return
+    if _wurd_s20_request_lock.locked():
+        await ctx.send("Another request is being submitted. Try again after it is acknowledged.")
+        return
+    async with _wurd_s20_request_lock:
+        # Our dedicated S20 macro must read 'week' and validate against the chosen week on screen.
+        # HTTP success means webhook delivery only, NOT export completion.
+        try:
+            def _send():
+                return requests.get(clean_url, params={"week": str(week)}, timeout=8)
+            response = await asyncio.to_thread(_send)
+            response.raise_for_status()
+        except Exception as exc:
+            logger.warning("S20 single-week webhook failed: %s", exc)
+            await ctx.send(f"Could not deliver the Week {week} request to S20. No export completion is claimed.")
+            return
+        await ctx.send(f"Requested **Week {week}** on S20. Awaiting phone-side confirmation; this is not an export-success report.",
+                       allowed_mentions=AllowedMentions.none())
+
 # The trigger: on_thread_create (new block)
 @bot.event
 async def on_thread_create(thread: nextcord.Thread):

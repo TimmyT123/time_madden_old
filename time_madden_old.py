@@ -686,10 +686,19 @@ async def pre_advance_reminder_loop():
                     else:
                         reminder_message = (
                             "🔔 **24-Hour Scheduling Reminder**\n"
-                            f"{mentions}\n"
-                            "Advance is approaching tomorrow.\n"
-                            "Please confirm scheduling.\n"
-                            "Failure to communicate may result in AP status."
+                            f"{mentions}\n\n"
+                            "Advance is approaching tomorrow.\n\n"
+                            "🏈 **Both players must make a genuine effort to schedule their game.**\n\n"
+                            "⏰ **30-MINUTE RESPONSE DEADLINE**\n"
+                            "If one player has not communicated, they have 30 minutes "
+                            "from this reminder to respond and make a scheduling effort.\n\n"
+                            "If they fail to do so, the player who has actively attempted "
+                            "to schedule may request a CPU Play, FS, or a FW from a commissioner.\n\n"
+                            "⚠️ Simply saying hello or acknowledging this reminder "
+                            "does not count as a genuine scheduling effort.\n\n"
+                            "If neither player has communicated, neither is eligible "
+                            "for a FW. Both may still arrange and play their game "
+                            "before advance.\n\n"
                         )
                     await ch.send(reminder_message, allowed_mentions=AllowedMentions(users=True))
 

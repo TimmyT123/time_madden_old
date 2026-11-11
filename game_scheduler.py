@@ -153,9 +153,9 @@ def _display(rec):
     lines.append('**Broadcasting this game:**')
     for uid in rec['users']:
         b = rec.get('broadcast', {}).get(str(uid))
-        lines.append(f'<@{uid}>: {"📺 Yes" if b is True else "No" if b is False else "Not selected"}')
+        lines.append(f'<@{uid}>: {"📺 Yes" if b is True else "No" if b is False else "Not sure yet"}')
     lines += ['', 'Use **Propose / Change Time**. Enter the time in YOUR saved local timezone; '
-              'the bot converts it for both players. Both must confirm. Broadcasting is optional. '
+              'the bot converts it for both players. Both must confirm. Streaming: Yes / No / Not sure yet. '
               'A 20-minute reminder is sent before confirmed kickoffs.']
     return '\n'.join(x for x in lines if x is not None)
 
@@ -210,63 +210,98 @@ def _parse_selected_time(day, clock, zone):
     return local
 
 
+def _stream_label(value):
+    """Text for the modal; None means the player is undecided."""
+    return 'Yes' if value is True else 'No' if value is False else 'Not sure yet'
+
+
+def _parse_stream_choice(value):
+    """Parse the three choices without accidentally recording a guess as No."""
+    selected = re.sub(r'\s+', ' ', value.strip().lower())
+    if selected in ('yes', 'y'):
+        return True
+    if selected in ('no', 'n'):
+        return False
+    if selected in ('not sure yet', 'not sure', 'maybe', 'unsure'):
+        return None
+    raise ValueError('For streaming, enter Yes, No, or Not sure yet.')
+
+
 class ProposeModal(nextcord.ui.Modal):
-    def __init__(self, selected_day, zone_code, zone):
-        super().__init__(title=f'Kickoff on {selected_day.strftime("%a, %b %d")}', custom_id='wurd:schedule:modal:v2')
+    def __init__(self, selected_day, zone_code, zone, prior_time=None, prior_stream=None):
+        super().__init__(title=f'Kickoff on {selected_day.strftime("%a, %b %d")}', custom_id='wurd:schedule:modal:v3')
         self.selected_day, self.zone = selected_day, zone
-        self.clock = nextcord.ui.TextInput(label=f'Your local time ({zone_code}) — HH:MM AM/PM', placeholder='9:30 PM', min_length=6,max_length=8)
+        self.clock = nextcord.ui.TextInput(
+            label=f'Your local time ({zone_code}) — HH:MM AM/PM',
+            placeholder='9:30 PM', min_length=6, max_length=8,
+            default_value=prior_time or None,
+        )
+        self.stream = nextcord.ui.TextInput(
+            label='Will you stream? Yes / No / Not sure yet',
+            placeholder='Yes / No / Not sure yet',
+            min_length=2, max_length=20,
+            default_value=_stream_label(prior_stream),
+        )
         self.add_item(self.clock)
+        self.add_item(self.stream)
 
     async def callback(self, interaction):
         channel = interaction.channel
         cid = str(channel.id)
         try:
-            local_dt = _parse_selected_time(self.selected_day,self.clock.value,self.zone)
+            local_dt = _parse_selected_time(self.selected_day, self.clock.value, self.zone)
+            broadcast = _parse_stream_choice(self.stream.value)
         except ValueError as exc:
-            await interaction.response.send_message(f'Invalid kickoff: {exc}',ephemeral=True)
+            await interaction.response.send_message(f'Invalid proposal: {exc}', ephemeral=True)
             return
-        if local_dt <= datetime.now(timezone.utc)+timedelta(minutes=1):
-            await interaction.response.send_message('Choose a future kickoff at least two minutes from now.',ephemeral=True)
+        if local_dt <= datetime.now(timezone.utc) + timedelta(minutes=1):
+            await interaction.response.send_message('Choose a future kickoff at least two minutes from now.', ephemeral=True)
             return
         async with _LOCK:
             data = _load()
             rec = data.get(cid)
-            if not rec or not _allowed(rec,interaction.user.id):
-                await interaction.response.send_message('Only matchup players can propose a kickoff.',ephemeral=True)
+            if not rec or not _allowed(rec, interaction.user.id):
+                await interaction.response.send_message('Only matchup players can propose a kickoff.', ephemeral=True)
                 return
             if any(_on_ap(uid) for uid in rec['users']):
-                await interaction.response.send_message('Scheduling is disabled while a player is on AP.',ephemeral=True)
+                await interaction.response.send_message('Scheduling is disabled while a player is on AP.', ephemeral=True)
                 return
             new_time = local_dt.astimezone(timezone.utc).isoformat()
-            if rec.get('kickoff_utc') and len(set(rec.get('confirmed',[]))) == 2:
+            if rec.get('kickoff_utc') and len(set(rec.get('confirmed', []))) == 2:
                 rec['pending_kickoff_utc'] = new_time
                 rec['pending_confirmed'] = [interaction.user.id]
             else:
                 rec['kickoff_utc'] = new_time
                 rec['confirmed'] = [interaction.user.id]
-                rec.pop('pending_kickoff_utc',None)
-                rec.pop('pending_confirmed',None)
+                rec.pop('pending_kickoff_utc', None)
+                rec.pop('pending_confirmed', None)
                 rec['reminder_sent'] = False
                 # A new unconfirmed proposal replaces the old proposal and its approval.
                 rec['extension_approved_for'] = None
                 rec['extension_approved_by'] = None
-            rec.setdefault('history',[]).append({'at':_stamp(),'action':'propose','by':interaction.user.id,'kickoff_utc':new_time})
+            # An undecided answer is stored as None; Yes/No can still be changed
+            # later using the existing broadcast buttons on the matchup panel.
+            rec.setdefault('broadcast', {})[str(interaction.user.id)] = broadcast
+            rec.setdefault('history', []).append({
+                'at': _stamp(), 'action': 'propose', 'by': interaction.user.id,
+                'kickoff_utc': new_time, 'broadcast': broadcast,
+            })
             _save(data)
-        await interaction.response.send_message('Kickoff proposed. Your opponent must confirm it.',ephemeral=True)
-        await _refresh(channel,rec)
-        other = next(uid for uid in rec['users'] if uid!=interaction.user.id)
+        await interaction.response.send_message('Kickoff proposed. Your opponent must confirm it.', ephemeral=True)
+        await _refresh(channel, rec)
+        other = next(uid for uid in rec['users'] if uid != interaction.user.id)
         deadline = _advance_deadline()
         late = bool(deadline and local_dt >= deadline)
         mention = f'<@{other}>'
         message = f'{mention} — please review the proposed kickoff and click **Confirm Time** if you agree.'
         if late:
-            role_name = os.getenv('GAME_CHANNEL_COMMISSIONER_ROLE_NAME','Commissioner')
-            role = nextcord.utils.get(channel.guild.roles,name=role_name) if channel.guild else None
+            role_name = os.getenv('GAME_CHANNEL_COMMISSIONER_ROLE_NAME', 'Commissioner')
+            role = nextcord.utils.get(channel.guild.roles, name=role_name) if channel.guild else None
             if role:
                 message += f'\n⚠️ {role.mention} — kickoff is at/after advance. Commissioner extension approval is required.'
             else:
                 message += '\n⚠️ Kickoff is at/after advance. Please contact a commissioner for approval.'
-        await channel.send(message,allowed_mentions=nextcord.AllowedMentions(users=True,roles=late))
+        await channel.send(message, allowed_mentions=nextcord.AllowedMentions(users=True, roles=late))
 
 
 class DayChoiceView(nextcord.ui.View):
@@ -291,7 +326,24 @@ class DayChoiceView(nextcord.ui.View):
                 if interaction.user.id != self.uid:
                     await interaction.response.send_message('This date selection belongs to another player.',ephemeral=True)
                     return
-                await interaction.response.send_modal(ProposeModal(selected,self.zone_code,self.zone))
+                rec = _load().get(str(interaction.channel_id))
+                if not rec or not _allowed(rec, interaction.user.id):
+                    await interaction.response.send_message('Only matchup players can propose a kickoff.', ephemeral=True)
+                    return
+                if any(_on_ap(uid) for uid in rec['users']):
+                    await interaction.response.send_message('Scheduling is disabled while a player is on AP.', ephemeral=True)
+                    return
+                # Prefill the currently proposed/official time in THIS player's zone.
+                # The day still comes from the Today/Tomorrow/Advance Day button.
+                existing = rec.get('pending_kickoff_utc') or rec.get('kickoff_utc')
+                prior_time = None
+                if existing:
+                    prior = datetime.fromisoformat(existing).astimezone(self.zone)
+                    prior_time = prior.strftime('%I:%M %p').lstrip('0')
+                prior_stream = rec.get('broadcast', {}).get(str(interaction.user.id))
+                await interaction.response.send_modal(
+                    ProposeModal(selected, self.zone_code, self.zone, prior_time, prior_stream)
+                )
             button.callback=select
             self.add_item(button)
 

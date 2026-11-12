@@ -1,4 +1,5 @@
-# VERSION: time_madden_old_v22.2_S20_DM.py
+# VERSION: time_madden_old_v22.3_WELCOME.py
+# v22.3: Commissioner !welcome posts to lobby-talk and records joining week in new-recruits.
 # v22.2: !s20 operates in authorized bot DMs; no control channel required.
 # v21 TEST: Route advances and GG to separate MacroDroid webhooks. Do not deploy until advance macro is verified.
 # v20 CHANGE: Rookie preseason URL uses the newest Madden upload season, not hardcoded season_0.
@@ -693,9 +694,9 @@ async def pre_advance_reminder_loop():
                             "If one player has not communicated, they have 30 minutes "
                             "from this reminder to respond and make a scheduling effort.\n\n"
                             "If they fail to do so, the player who has actively attempted "
-                            "to schedule may request a CPU Play, FS, or a FW from a commissioner.\n\n"
+                            "to schedule may request a CPU Play, FS, or a FW from a commissioner.\n"
                             "⚠️ Simply saying hello or acknowledging this reminder "
-                            "does not count as a genuine scheduling effort.\n\n"
+                            "does not count as a genuine scheduling effort.\n"
                             "If neither player has communicated, neither is eligible "
                             "for a FW. Both may still arrange and play their game "
                             "before advance.\n\n"
@@ -1222,6 +1223,8 @@ Shows PT, AZ, MT, CT, and ET publicly in the channel where the command is used.
 
 🔒 **WURD Admin Commands**
 *These commands are shown only to admins/authorized users who use `!help` in DM.*
+
+**!welcome @member** — Welcome a new owner in #lobby-talk and record their joining week in #new-recruits.
 
 **!nocomm [team/user]** — Show current-season users who never communicated in a User-vs-User game channel.
 
@@ -4672,6 +4675,160 @@ def commissioner_admin_or_authorized():
             return False
         return any(r.name in {ADMIN_ROLE_NAME, COMMISSIONER_ROLE_NAME} for r in member.roles)
     return commands.check(predicate)
+
+
+# ===============================
+# COMMISSIONER NEW-MEMBER WELCOME
+# ===============================
+WELCOME_RECORDS_FILE = "data/wurd_member_join_records.json"
+_welcome_lock = asyncio.Lock()
+
+
+def _load_welcome_records() -> dict:
+    try:
+        with open(WELCOME_RECORDS_FILE, "r", encoding="utf-8") as f:
+            records = json.load(f)
+            if not isinstance(records, dict):
+                raise ValueError("Welcome records must be a JSON object")
+            return records
+    except FileNotFoundError:
+        return {}
+
+
+def _save_welcome_records(records: dict) -> None:
+    os.makedirs(os.path.dirname(WELCOME_RECORDS_FILE), exist_ok=True)
+    temp_path = WELCOME_RECORDS_FILE + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+    os.replace(temp_path, WELCOME_RECORDS_FILE)
+
+
+@bot.command(name="welcome")
+@commissioner_admin_or_authorized()
+async def welcome_member(ctx, member: nextcord.Member = None):
+    """Welcome one tagged owner from #lobby-talk and record their joining week."""
+    if ctx.guild is None or ctx.guild.id != GUILD_ID or ctx.channel.name != "lobby-talk":
+        await ctx.send("Use `!welcome @member` in WURD's **#lobby-talk** channel.")
+        return
+
+    if member is None or member.bot or member.id == ctx.author.id:
+        await ctx.send("Please mention one new league member: `!welcome @member`.")
+        return
+
+    team = extract_team_from_nick(member.display_name)
+    if not team:
+        await ctx.send(
+            f"I couldn't identify a team from {member.mention}'s nickname. "
+            "Assign their WURD team nickname first, then retry.",
+            allowed_mentions=AllowedMentions.none(),
+        )
+        return
+
+    week = _load_week_state().get("week")
+    try:
+        week = int(week)
+    except (TypeError, ValueError):
+        week = 0
+    if week not in {*range(1, 24), -4, -3, -2, -1} or week == 22:
+        await ctx.send("I can't verify the current Madden week. No announcement was posted.")
+        return
+
+    recruits = nextcord.utils.get(ctx.guild.text_channels, name="new-recruits")
+    if recruits is None:
+        await ctx.send("I couldn't find #new-recruits. No announcement was posted.")
+        return
+
+    # Persist each step so retries after temporary Discord failures don't repost a record.
+    async with _welcome_lock:
+        try:
+            records = _load_welcome_records()
+        except Exception as exc:
+            logger.error("!welcome could not load member records: %s", exc)
+            await ctx.send("I couldn't read the joining records. No announcement was posted.")
+            return
+
+        key = str(member.id)
+        existing = records.get(key)
+        if existing and existing.get("completed"):
+            await ctx.send(
+                f"{member.display_name} already has a joining record "
+                f"({_advance_week_label(existing.get('week'))}). No duplicate posted."
+            )
+            return
+
+        if existing:
+            # Preserve the original joining date/week on retries.
+            record = existing
+        else:
+            now_az = datetime.now(pytz.timezone("US/Arizona"))
+            record = {
+                "user_id": member.id,
+                "nickname_at_join": member.display_name,
+                "team": team,
+                "week": week,
+                "joined_at_az": now_az.isoformat(),
+                "commissioner_id": ctx.author.id,
+                "recruits_message_id": None,
+                "lobby_message_id": None,
+                "completed": False,
+            }
+
+        record_team = str(record["team"]).title()
+        record_week = _advance_week_label(record["week"])
+        joined_date = datetime.fromisoformat(record["joined_at_az"]).strftime("%B %d, %Y")
+        record_text = (
+            "📋 **NEW MEMBER JOINING RECORD**\n\n"
+            f"👤 **Member:** {member.mention}\n"
+            f"🏈 **Team:** {record_team}\n"
+            f"📅 **Joined:** {joined_date}\n"
+            f"🏆 **Joined League:** {record_week}\n"
+            f"✅ **Welcomed by:** <@{record['commissioner_id']}>\n\n"
+            "*Official WURD recruitment record.*"
+        )
+        welcome_text = (
+            "🏈 **WELCOME TO WURD CHAMPIONSHIP!** 🏆\n\n"
+            "@everyone\n\n"
+            f"Everybody welcome {member.mention}, our newest **{record_team}** owner!\n\n"
+            f"Glad to have you joining us in **{record_week}**!\n\n"
+            "👋 WURD family, show our newest member some love and say what's up!\n\n"
+            "🎮 Good luck this season, and let's have some fun!"
+        )
+
+        try:
+            if not record.get("recruits_message_id"):
+                msg = await recruits.send(
+                    record_text,
+                    allowed_mentions=AllowedMentions(users=True, roles=False, everyone=False),
+                )
+                record["recruits_message_id"] = msg.id
+                records[key] = record
+                _save_welcome_records(records)
+
+            if not record.get("lobby_message_id"):
+                msg = await ctx.channel.send(
+                    welcome_text,
+                    allowed_mentions=AllowedMentions(users=True, roles=False, everyone=True),
+                )
+                record["lobby_message_id"] = msg.id
+                records[key] = record
+                _save_welcome_records(records)
+
+            record["completed"] = True
+            records[key] = record
+            _save_welcome_records(records)
+
+        except (nextcord.Forbidden, nextcord.HTTPException, OSError) as exc:
+            logger.exception("!welcome failed for %s: %s", member.id, exc)
+            await ctx.send(
+                "⚠️ The welcome didn't fully finish. Check bot permissions and "
+                "retry the same command; completed steps won't be reposted."
+            )
+            return
+
+        try:
+            await ctx.message.delete()  # Requires Manage Messages; don't fail the welcome if denied.
+        except (nextcord.Forbidden, nextcord.HTTPException):
+            logger.info("!welcome command message could not be deleted in #%s", ctx.channel.name)
 
 
 @bot.command(name="nocomm", aliases=["nocommunication", "no_comm"])

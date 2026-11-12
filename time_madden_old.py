@@ -1,16 +1,8 @@
-# VERSION: time_madden_old_v22.3_WELCOME.py
+# VERSION: time_madden_old_v22.4.py
+# v22.4: reworded the warning message
 # v22.3: Commissioner !welcome posts to lobby-talk and records joining week in new-recruits.
 # v22.2: !s20 operates in authorized bot DMs; no control channel required.
 # v21 TEST: Route advances and GG to separate MacroDroid webhooks. Do not deploy until advance macro is verified.
-# v20 CHANGE: Rookie preseason URL uses the newest Madden upload season, not hardcoded season_0.
-# v19 CHANGE: Power Rankings no longer auto-post in the advance channel; !powerrankings remains available on demand.
-# v18 CHANGE: Matchup channels now show the scheduled advance immediately below the welcome message, converted to the participating users' timezone(s).
-# v17 CHANGE: Games of the Week now post a one-time FEATURED GAME streaming prompt in each selected matchup channel.
-# v16 CHANGE: Automatic no-communication warnings to #commish-rm are OFF by default; !nocomm tracking/history remains active.
-# v15 CHANGE: Added season-long no-communication tracking for User-vs-User game channels.
-# v15 DETAILS: Checks shortly before advance and again before old matchup channels are deleted; records user, team, opponent, and week.
-# v15 CPU/AP SAFETY: CPU games have no matchup channel and are never counted; channels containing an AP user are skipped because the matchup becomes CPU-play eligible.
-# v15 COMMAND: Added commissioner/admin !nocomm [team/user] report; history resets automatically at Preseason Week 1 (with Week 1 fallback).
 # MODIFIED SECTIONS: no-communication storage/helpers, pre-advance watcher, advance channel cleanup snapshot, admin help, !nocomm command, and startup loops.
 # This file is time_madden_old.py, dev on the windows laptop and automatically runs on the raspberrync
 #!/usr/bin/env python3
@@ -694,7 +686,7 @@ async def pre_advance_reminder_loop():
                             "If one player has not communicated, they have 30 minutes "
                             "from this reminder to respond and make a scheduling effort.\n\n"
                             "If they fail to do so, the player who has actively attempted "
-                            "to schedule may request a CPU Play, FS, or a FW from a commissioner.\n"
+                            "to schedule may notify a commissioner for a CPU Play, FS, or a FW.\n"
                             "⚠️ Simply saying hello or acknowledging this reminder "
                             "does not count as a genuine scheduling effort.\n"
                             "If neither player has communicated, neither is eligible "

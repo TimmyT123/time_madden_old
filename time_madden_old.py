@@ -1,4 +1,5 @@
-# VERSION: time_madden_old_v22.4.py
+# VERSION: time_madden_old_v22.5.py
+# v22.5: Broadcast-only 20-minute pregame previews in #game-streams.
 # v22.4: reworded the warning message
 # v22.3: Commissioner !welcome posts to lobby-talk and records joining week in new-recruits.
 # v22.2: !s20 operates in authorized bot DMs; no control channel required.
@@ -27,6 +28,7 @@ import requests
 import hashlib
 import shutil
 import game_scheduler
+import pregame_broadcaster
 
 from nextcord import File, AllowedMentions
 
@@ -6537,6 +6539,7 @@ async def on_ready():
         bot.loop.create_task(ap_trigger_watcher())
         bot.loop.create_task(game_ai_day2_watcher_loop())
         bot.loop.create_task(game_scheduler.reminder_loop(bot))
+        bot.loop.create_task(pregame_broadcaster.pregame_loop(bot, lambda: _current_gotw_pairs))
 
         # start inactivity loop
         # bot.loop.create_task(check_inactivity())  # This is turned off for now

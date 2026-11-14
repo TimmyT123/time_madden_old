@@ -150,12 +150,12 @@ def _display(rec):
     approvals = rec.get('pending_confirmed', []) if pending else rec.get('confirmed', [])
     lines.append('**Confirmations:**')
     lines += [f'<@{uid}>: {"✅ Confirmed" if uid in approvals else "⏳ Awaiting confirmation"}' for uid in rec['users']]
-    lines.append('**Broadcasting this game:**')
+    lines.append('**📺 Will YOU broadcast this game? Choose below or answer in the kickoff popup:**')
     for uid in rec['users']:
         b = rec.get('broadcast', {}).get(str(uid))
         lines.append(f'<@{uid}>: {"📺 Yes" if b is True else "No" if b is False else "Not sure yet"}')
     lines += ['', 'Use **Propose / Change Time**. Enter the time in YOUR saved local timezone; '
-              'the bot converts it for both players. Both must confirm. Streaming: Yes / No / Not sure yet. '
+              'the bot converts it for both players. Both must confirm. Each player can select their own broadcast status below. '
               'A 20-minute reminder is sent before confirmed kickoffs.']
     return '\n'.join(x for x in lines if x is not None)
 
@@ -293,7 +293,9 @@ class ProposeModal(nextcord.ui.Modal):
         deadline = _advance_deadline()
         late = bool(deadline and local_dt >= deadline)
         mention = f'<@{other}>'
-        message = f'{mention} — please review the proposed kickoff and click **Confirm Time** if you agree.'
+        message = (f'{mention} — **New kickoff proposal**\n'
+                   f'{_kickoff_lines(rec, new_time)}\n'
+                   'Please choose **Confirm Time** if you agree, or **Change Time** to suggest another kickoff.')
         if late:
             role_name = os.getenv('GAME_CHANNEL_COMMISSIONER_ROLE_NAME', 'Commissioner')
             role = nextcord.utils.get(channel.guild.roles, name=role_name) if channel.guild else None
@@ -301,7 +303,15 @@ class ProposeModal(nextcord.ui.Modal):
                 message += f'\n⚠️ {role.mention} — kickoff is at/after advance. Commissioner extension approval is required.'
             else:
                 message += '\n⚠️ Kickoff is at/after advance. Please contact a commissioner for approval.'
-        await channel.send(message, allowed_mentions=nextcord.AllowedMentions(users=True, roles=late))
+        notice = await channel.send(message, view=ProposalNotificationView(),
+                                    allowed_mentions=nextcord.AllowedMentions(users=True, roles=late))
+        # Record which notice is current; old notices cannot approve a newer proposal.
+        async with _LOCK:
+            data = _load()
+            current = data.get(cid)
+            if current and (current.get('pending_kickoff_utc') or current.get('kickoff_utc')) == new_time:
+                current['proposal_notice_id'] = notice.id
+                _save(data)
 
 
 class DayChoiceView(nextcord.ui.View):
@@ -348,64 +358,110 @@ class DayChoiceView(nextcord.ui.View):
             self.add_item(button)
 
 
+
+
+async def _propose_action(interaction):
+    rec = _load().get(str(interaction.channel_id))
+    if not rec or not _allowed(rec, interaction.user.id):
+        await interaction.response.send_message('This button is for the two matchup players only.', ephemeral=True)
+        return
+    code, zone = _member_zone(interaction.user.id)
+    if not zone:
+        await interaction.response.send_message('Your Discord nickname needs a timezone suffix (PT, AZ, MT, CT, or ET). Please ask a commissioner to set it.',ephemeral=True)
+        return
+    await interaction.response.send_message(f'Choose a kickoff day. All times you enter are **{code}** (your local timezone). Opponent times convert automatically.',view=DayChoiceView(interaction.user.id,code,zone),ephemeral=True)
+
+
+
+async def _confirm_action(interaction):
+    cid = str(interaction.channel_id)
+    async with _LOCK:
+        data = _load()
+        rec = data.get(cid)
+        if not rec or not _allowed(rec, interaction.user.id):
+            await interaction.response.send_message('Only matchup participants can confirm.', ephemeral=True)
+            return
+        if any(_on_ap(uid) for uid in rec['users']):
+            await interaction.response.send_message('This matchup currently includes an AP player.', ephemeral=True)
+            return
+        if not (rec.get('pending_kickoff_utc') or rec.get('kickoff_utc')):
+            await interaction.response.send_message('Propose a kickoff first.', ephemeral=True)
+            return
+        target = rec.get('pending_kickoff_utc') or rec['kickoff_utc']
+        if datetime.fromisoformat(target) <= datetime.now(timezone.utc):
+            await interaction.response.send_message('That kickoff has passed. Propose a new time.', ephemeral=True)
+            return
+        confirmations = rec.get('pending_confirmed', []) if rec.get('pending_kickoff_utc') else rec.get('confirmed', [])
+        if interaction.user.id in confirmations:
+            await interaction.response.send_message('You have already confirmed this time.', ephemeral=True)
+            return
+        if rec.get('pending_kickoff_utc'):
+            rec.setdefault('pending_confirmed', []).append(interaction.user.id)
+            if len(rec['pending_confirmed']) == 2:
+                rec['kickoff_utc'] = rec.pop('pending_kickoff_utc')
+                rec['confirmed'] = rec.pop('pending_confirmed')
+                rec['reminder_sent'] = False
+                # Extension approval only carries forward when the approved timestamp matches.
+                if rec.get('extension_approved_for') != rec['kickoff_utc']:
+                    rec['extension_approved_for'] = None
+                    rec['extension_approved_by'] = None
+        else:
+            rec.setdefault('confirmed', []).append(interaction.user.id)
+        rec.setdefault('history', []).append({'at': _stamp(), 'action': 'confirm', 'by': interaction.user.id})
+        _save(data)
+    await interaction.response.send_message('Your confirmation was saved.', ephemeral=True)
+    await _refresh(interaction.channel, rec)
+    if len(rec['confirmed']) == 2 and not rec.get('pending_kickoff_utc'):
+        ts = int(datetime.fromisoformat(rec['kickoff_utc']).timestamp())
+        await interaction.channel.send(f'✅ **OFFICIAL KICKOFF CONFIRMED** — <t:{ts}:F>. Both players agreed. A 20-minute reminder will be sent.', allowed_mentions=nextcord.AllowedMentions.none())
+        notice_id = rec.get('proposal_notice_id')
+        if notice_id:
+            try:
+                notice = await interaction.channel.fetch_message(int(notice_id))
+                await notice.edit(view=None)
+            except (nextcord.NotFound, nextcord.Forbidden, nextcord.HTTPException) as exc:
+                LOG.warning('[SCHEDULER] Could not clear confirmed notice: %s', exc)
+
+
+
+class ProposalNotificationView(nextcord.ui.View):
+    """Persistent actions beside the ping, not just on the matchup panel."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @nextcord.ui.button(label='Confirm Time', style=nextcord.ButtonStyle.success,
+                        custom_id='wurd:schedule:notice-confirm:v1')
+    async def confirm(self, button, interaction):
+        # An older notification must not confirm a different/newer proposal.
+        rec = _load().get(str(interaction.channel_id))
+        if not rec or rec.get('proposal_notice_id') != interaction.message.id:
+            await interaction.response.send_message(
+                'This notice is outdated. Use the newest proposal or main scheduling panel.', ephemeral=True)
+            return
+        await _confirm_action(interaction)
+
+    @nextcord.ui.button(label='Change Time', style=nextcord.ButtonStyle.primary,
+                        custom_id='wurd:schedule:notice-change:v1')
+    async def change(self, button, interaction):
+        rec = _load().get(str(interaction.channel_id))
+        if not rec or rec.get('proposal_notice_id') != interaction.message.id:
+            await interaction.response.send_message(
+                'This notice is outdated. Use the newest proposal or main scheduling panel.', ephemeral=True)
+            return
+        await _propose_action(interaction)
+
+
 class SchedulingView(nextcord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
     @nextcord.ui.button(label='Propose / Change Time', style=nextcord.ButtonStyle.primary, custom_id='wurd:schedule:propose:v1', row=0)
     async def propose(self, button, interaction):
-        rec = _load().get(str(interaction.channel_id))
-        if not rec or not _allowed(rec, interaction.user.id):
-            await interaction.response.send_message('This button is for the two matchup players only.', ephemeral=True)
-            return
-        code, zone = _member_zone(interaction.user.id)
-        if not zone:
-            await interaction.response.send_message('Your Discord nickname needs a timezone suffix (PT, AZ, MT, CT, or ET). Please ask a commissioner to set it.',ephemeral=True)
-            return
-        await interaction.response.send_message(f'Choose a kickoff day. All times you enter are **{code}** (your local timezone). Opponent times convert automatically.',view=DayChoiceView(interaction.user.id,code,zone),ephemeral=True)
+        await _propose_action(interaction)
 
     @nextcord.ui.button(label='Confirm Time', style=nextcord.ButtonStyle.success, custom_id='wurd:schedule:confirm:v1', row=0)
     async def confirm(self, button, interaction):
-        cid = str(interaction.channel_id)
-        async with _LOCK:
-            data = _load()
-            rec = data.get(cid)
-            if not rec or not _allowed(rec, interaction.user.id):
-                await interaction.response.send_message('Only matchup participants can confirm.', ephemeral=True)
-                return
-            if any(_on_ap(uid) for uid in rec['users']):
-                await interaction.response.send_message('This matchup currently includes an AP player.', ephemeral=True)
-                return
-            if not (rec.get('pending_kickoff_utc') or rec.get('kickoff_utc')):
-                await interaction.response.send_message('Propose a kickoff first.', ephemeral=True)
-                return
-            target = rec.get('pending_kickoff_utc') or rec['kickoff_utc']
-            if datetime.fromisoformat(target) <= datetime.now(timezone.utc):
-                await interaction.response.send_message('That kickoff has passed. Propose a new time.', ephemeral=True)
-                return
-            confirmations = rec.get('pending_confirmed', []) if rec.get('pending_kickoff_utc') else rec.get('confirmed', [])
-            if interaction.user.id in confirmations:
-                await interaction.response.send_message('You have already confirmed this time.', ephemeral=True)
-                return
-            if rec.get('pending_kickoff_utc'):
-                rec.setdefault('pending_confirmed', []).append(interaction.user.id)
-                if len(rec['pending_confirmed']) == 2:
-                    rec['kickoff_utc'] = rec.pop('pending_kickoff_utc')
-                    rec['confirmed'] = rec.pop('pending_confirmed')
-                    rec['reminder_sent'] = False
-                    # Extension approval only carries forward when the approved timestamp matches.
-                    if rec.get('extension_approved_for') != rec['kickoff_utc']:
-                        rec['extension_approved_for'] = None
-                        rec['extension_approved_by'] = None
-            else:
-                rec.setdefault('confirmed', []).append(interaction.user.id)
-            rec.setdefault('history', []).append({'at': _stamp(), 'action': 'confirm', 'by': interaction.user.id})
-            _save(data)
-        await interaction.response.send_message('Your confirmation was saved.', ephemeral=True)
-        await _refresh(interaction.channel, rec)
-        if len(rec['confirmed']) == 2 and not rec.get('pending_kickoff_utc'):
-            ts = int(datetime.fromisoformat(rec['kickoff_utc']).timestamp())
-            await interaction.channel.send(f'✅ **OFFICIAL KICKOFF CONFIRMED** — <t:{ts}:F>. Both players agreed. A 20-minute reminder will be sent.', allowed_mentions=nextcord.AllowedMentions.none())
+        await _confirm_action(interaction)
 
     @nextcord.ui.button(label='Approve Late Kickoff',style=nextcord.ButtonStyle.secondary,custom_id='wurd:schedule:extension:v2',row=2)
     async def approve_extension(self,button,interaction):
@@ -449,13 +505,18 @@ class SchedulingView(nextcord.ui.View):
         await interaction.response.send_message('Broadcast preference saved.', ephemeral=True)
         await _refresh(interaction.channel, rec)
 
-    @nextcord.ui.button(label='Broadcast: Yes', style=nextcord.ButtonStyle.secondary, custom_id='wurd:schedule:yes:v1', row=1)
+    @nextcord.ui.button(label='📺 I Will Broadcast', style=nextcord.ButtonStyle.success, custom_id='wurd:schedule:yes:v1', row=1)
     async def yes(self, button, interaction):
         await self._broadcast(interaction, True)
 
-    @nextcord.ui.button(label='Broadcast: No', style=nextcord.ButtonStyle.secondary, custom_id='wurd:schedule:no:v1', row=1)
+    @nextcord.ui.button(label='🚫 Not Broadcasting', style=nextcord.ButtonStyle.danger, custom_id='wurd:schedule:no:v1', row=1)
     async def no(self, button, interaction):
         await self._broadcast(interaction, False)
+
+    @nextcord.ui.button(label='❔ Not Sure Yet', style=nextcord.ButtonStyle.secondary,
+                        custom_id='wurd:schedule:unsure:v1', row=1)
+    async def unsure(self, button, interaction):
+        await self._broadcast(interaction, None)
 
 
 def setup(bot, advance_reader=None, ap_check=None):
@@ -464,6 +525,7 @@ def setup(bot, advance_reader=None, ap_check=None):
     _ADVANCE_READER = advance_reader
     _AP_CHECK = ap_check
     bot.add_view(SchedulingView())
+    bot.add_view(ProposalNotificationView())
 
 
 async def create_panel(channel, member_ids, matchup, league_id=None, season=None, week=None):

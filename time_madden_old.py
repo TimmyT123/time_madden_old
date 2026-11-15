@@ -1,4 +1,5 @@
-# VERSION: time_madden_old_v22.5.py
+# VERSION: time_madden_old_v22.6.py
+# v22.6: Load .env before importing scheduler/pregame modules.
 # v22.5: Broadcast-only 20-minute pregame previews in #game-streams.
 # v22.4: reworded the warning message
 # v22.3: Commissioner !welcome posts to lobby-talk and records joining week in new-recruits.
@@ -27,6 +28,9 @@ import logging
 import requests
 import hashlib
 import shutil
+
+# Load configuration BEFORE importing modules that read environment variables at import time.
+load_dotenv()
 import game_scheduler
 import pregame_broadcaster
 
@@ -59,8 +63,7 @@ except Exception:
 
 TEST = False  # Debug mode variable. If True, print outputs instead of sending to Discord advance or schedule forum
 
-# Load environment variables from a .env file
-load_dotenv()
+# Configuration loaded above, before scheduler/pregame imports.
 token = os.getenv('DISCORD_BOT_TOKEN')
 
 GUILD_ID = int(os.getenv("GUILD_ID"))  # WURD_CHAMPIONSHIPS

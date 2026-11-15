@@ -1,4 +1,4 @@
-"""WURD streamed-matchup pregame previews, v1.0.
+"""WURD streamed-matchup pregame previews, v1.1.
 
 Only confirmed scheduled matchups where at least one participant opted to stream.
 Does not tag participants, publish stream URLs, or change the game reminder.
@@ -13,7 +13,10 @@ from pathlib import Path
 
 import nextcord
 import requests
+from dotenv import load_dotenv
 
+# Also safe when this module is imported separately from the main bot.
+load_dotenv()
 import game_scheduler
 
 LOG = logging.getLogger('discord_bot')
@@ -144,11 +147,12 @@ async def pregame_loop(bot, featured_pairs=None, poll_seconds=30):
     while not bot.is_closed():
         try:
             if not STREAMS_CHANNEL_ID:
+                LOG.error('[PREGAME] Missing GAME_STREAMS_CHANNEL_ID; cannot post pregame previews')
                 await asyncio.sleep(poll_seconds)
                 continue
             destination = bot.get_channel(STREAMS_CHANNEL_ID)
             if destination is None:
-                LOG.warning('[PREGAME] GAME_STREAMS_CHANNEL_ID unavailable')
+                LOG.warning('[PREGAME] Channel ID %s unavailable in bot cache', STREAMS_CHANNEL_ID)
                 await asyncio.sleep(poll_seconds)
                 continue
             async with game_scheduler._LOCK:
@@ -180,6 +184,7 @@ async def pregame_loop(bot, featured_pairs=None, poll_seconds=30):
                         'kickoff_utc': kickoff, 'message_id': posted.id,
                     })
                     game_scheduler._save(data)
+                    LOG.info('[PREGAME] Posted preview for %s in channel %s (message %s)', rec.get('matchup'), STREAMS_CHANNEL_ID, posted.id)
         except Exception:
             LOG.exception('[PREGAME] Preview loop failed')
         await asyncio.sleep(poll_seconds)

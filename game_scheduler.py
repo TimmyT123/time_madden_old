@@ -1,4 +1,4 @@
-"""WURD official matchup scheduling v0.2 (Discord and website JSON).
+"""WURD official matchup scheduling v0.3 (Discord and website JSON).
 
 Persistent buttons, Arizona-time proposals, two-party confirmation, broadcast flags,
 20-minute reminders, matchup-specific timestamps, and atomic JSON storage. No league advances are triggered.
@@ -140,23 +140,31 @@ def _display(rec):
     else:
         status = '⚪ **Unscheduled**'
         kickoff = 'Not proposed yet'
+    # Put the required next action ABOVE the detailed panel, not at the bottom.
+    approvals = rec.get('pending_confirmed', []) if pending else rec.get('confirmed', [])
+    if pending:
+        action = '👉 **ACTION: Review the proposed CHANGE. Click Confirm Time to agree, or Propose / Change Time to suggest another.**'
+    elif proposed and not confirmed and not expired:
+        action = '👉 **ACTION: Awaiting confirmation. The unconfirmed player should click Confirm Time or Propose / Change Time.**'
+    elif proposed and confirmed:
+        action = '✅ **Both players confirmed. No action needed unless you want to change kickoff.**'
+    else:
+        action = '👉 **ACTION: Click Propose / Change Time to schedule your kickoff.**'
     lines = ['🏈 **WURD — Official Game Scheduling**',
-             f'**{rec.get("matchup", "Matchup")}**',status,
-             '**Kickoff (each player’s local timezone):**',kickoff]
+             f'**{rec.get("matchup", "Matchup")}**', action, status,
+             '**Kickoff (each player’s local timezone):**', kickoff]
     if proposed:
         lines.append(_extension_note(rec, proposed))
     if pending:
         lines += ['🟠 **CHANGE PROPOSED — awaiting both approvals:**', _kickoff_lines(rec,pending),_extension_note(rec,pending)]
-    approvals = rec.get('pending_confirmed', []) if pending else rec.get('confirmed', [])
     lines.append('**Confirmations:**')
     lines += [f'<@{uid}>: {"✅ Confirmed" if uid in approvals else "⏳ Awaiting confirmation"}' for uid in rec['users']]
     lines.append('**📺 Will YOU broadcast this game? Choose below or answer in the kickoff popup:**')
     for uid in rec['users']:
         b = rec.get('broadcast', {}).get(str(uid))
         lines.append(f'<@{uid}>: {"📺 Yes" if b is True else "No" if b is False else "Not sure yet"}')
-    lines += ['', 'Use **Propose / Change Time**. Enter the time in YOUR saved local timezone; '
-              'the bot converts it for both players. Both must confirm. Each player can select their own broadcast status below. '
-              'A 20-minute reminder is sent before confirmed kickoffs.']
+    lines += ['', 'Times are entered in YOUR saved local timezone and converted automatically. '
+              'Use the buttons below to update broadcast status. A 20-minute reminder is sent before confirmed kickoffs.']
     return '\n'.join(x for x in lines if x is not None)
 
 
@@ -287,15 +295,24 @@ class ProposeModal(nextcord.ui.Modal):
                 'kickoff_utc': new_time, 'broadcast': broadcast,
             })
             _save(data)
-        await interaction.response.send_message('Kickoff proposed. Your opponent must confirm it.', ephemeral=True)
+        # This appears at the user's button/modal location, independent of scroll position.
+        local_label = local_dt.strftime('%a, %b %d at %I:%M %p').replace(' 0', ' ')
+        await interaction.response.send_message(
+            f'✅ **Proposal saved: {local_label}** ({self.zone.key}).\n'
+            '👉 **NEXT STEP:** Your opponent will receive a new message with '
+            '**Confirm Time** and **Change Time** buttons. No further action needed from you yet.',
+            ephemeral=True,
+        )
         await _refresh(channel, rec)
         other = next(uid for uid in rec['users'] if uid != interaction.user.id)
         deadline = _advance_deadline()
         late = bool(deadline and local_dt >= deadline)
         mention = f'<@{other}>'
-        message = (f'{mention} — **New kickoff proposal**\n'
-                   f'{_kickoff_lines(rec, new_time)}\n'
-                   'Please choose **Confirm Time** if you agree, or **Change Time** to suggest another kickoff.')
+        message = (f'🚨 **KICKOFF PROPOSAL — RESPONSE NEEDED** {mention}\n'
+                   '👉 **Choose a button directly below:**\n'
+                   '✅ **Confirm Time** — agree to the kickoff\n'
+                   '🔄 **Change Time** — propose another kickoff\n\n'
+                   f'**Proposed kickoff (local times):**\n{_kickoff_lines(rec, new_time)}')
         if late:
             role_name = os.getenv('GAME_CHANNEL_COMMISSIONER_ROLE_NAME', 'Commissioner')
             role = nextcord.utils.get(channel.guild.roles, name=role_name) if channel.guild else None
@@ -369,7 +386,7 @@ async def _propose_action(interaction):
     if not zone:
         await interaction.response.send_message('Your Discord nickname needs a timezone suffix (PT, AZ, MT, CT, or ET). Please ask a commissioner to set it.',ephemeral=True)
         return
-    await interaction.response.send_message(f'Choose a kickoff day. All times you enter are **{code}** (your local timezone). Opponent times convert automatically.',view=DayChoiceView(interaction.user.id,code,zone),ephemeral=True)
+    await interaction.response.send_message(f'📅 **NEXT STEP: Choose a kickoff day below.**\nEnter the time in **{code}** (your local timezone) in the popup. Your opponent’s time converts automatically.',view=DayChoiceView(interaction.user.id,code,zone),ephemeral=True)
 
 
 
@@ -409,9 +426,23 @@ async def _confirm_action(interaction):
             rec.setdefault('confirmed', []).append(interaction.user.id)
         rec.setdefault('history', []).append({'at': _stamp(), 'action': 'confirm', 'by': interaction.user.id})
         _save(data)
-    await interaction.response.send_message('Your confirmation was saved.', ephemeral=True)
+    # Explain the result at the click location so the user never needs to scroll
+    # down a long matchup channel to discover whether their action succeeded.
+    is_official = (not rec.get('pending_kickoff_utc') and
+                   len(set(rec.get('confirmed', []))) == 2)
+    ts = int(datetime.fromisoformat(target).timestamp())
+    if is_official:
+        response = (f'✅ **OFFICIAL — both players confirmed!**\n'
+                    f'🏈 Kickoff: <t:{ts}:F> (<t:{ts}:R>).\n'
+                    'A game-channel announcement and 20-minute reminder will follow.')
+    else:
+        other = next(uid for uid in rec['users'] if uid != interaction.user.id)
+        response = (f'✅ **Your confirmation is saved** for <t:{ts}:F>.\n'
+                    f'⏳ **NEXT STEP:** Waiting for <@{other}> to confirm the proposed time.')
+    await interaction.response.send_message(response, ephemeral=True,
+                                            allowed_mentions=nextcord.AllowedMentions.none())
     await _refresh(interaction.channel, rec)
-    if len(rec['confirmed']) == 2 and not rec.get('pending_kickoff_utc'):
+    if is_official:
         ts = int(datetime.fromisoformat(rec['kickoff_utc']).timestamp())
         await interaction.channel.send(f'✅ **OFFICIAL KICKOFF CONFIRMED** — <t:{ts}:F>. Both players agreed. A 20-minute reminder will be sent.', allowed_mentions=nextcord.AllowedMentions.none())
         notice_id = rec.get('proposal_notice_id')

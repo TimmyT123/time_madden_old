@@ -1248,7 +1248,7 @@ Shows PT, AZ, MT, CT, and ET publicly in the channel where the command is used.
 
 # Link finder + nickname/team parsing (helpers)
 LINK_RE = re.compile(
-    r"(https?://(?:www\.)?twitch\.tv/[A-Za-z0-9_]{4,25}"
+    r"(https?://(?:www\.)?twitch\.tv/[^\s<>]+"
     r"|https?://(?:www\.)?youtube\.com/[^\s<>]+"
     r"|https?://(?:www\.)?youtu\.be/[^\s<>]+)",
     re.IGNORECASE

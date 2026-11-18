@@ -56,7 +56,7 @@ def build_flyer_image_prompt(data: dict) -> str:
     a = data["away"]
 
     return f"""
-Create a cinematic Madden-style NFL game flyer.
+Create a cinematic Madden NFL 27 game flyer.
 
 IMPORTANT:
 - Display the matchup text EXACTLY as written
@@ -82,7 +82,7 @@ Style requirements:
 - Dramatic lighting
 - Team colors emphasized
 - Realistic football players
-- Madden-style broadcast look
+- Madden NFL 27 broadcast look
 - High contrast
 - Include league logo prominently
 """

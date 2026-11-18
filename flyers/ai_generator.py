@@ -12,8 +12,10 @@ _openai_client = OpenAI()
 
 def generate_chatgpt_flyer_image(prompt: str, out_path: str) -> bool:
     try:
+        model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2.5-sunburst").strip() or "gpt-image-2.5-sunburst"
+        logger.info("Generating WURD AI flyer with model: %s", model)
         result = _openai_client.images.generate(
-            model="gpt-image-1",
+            model=model,
             prompt=prompt,
             size="1024x1536",
             n=1

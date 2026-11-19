@@ -1,4 +1,4 @@
-# pipeline.py
+# pipeline.py — WURD current-season flyer fix v1.1
 async def handle_game_stream_post(bot, msg):
     import sys
     state = sys.modules["__main__"]
@@ -37,30 +37,39 @@ async def handle_game_stream_post(bot, msg):
             return
         logger.info(f"DEBUG: matchup resolved → {t1} vs {t2}")
 
-        # Load team IDs
-        if not state.TEAM_NAME_TO_ID:
-            state.load_team_id_mapping()
+        # Always refresh from the live /api/teams endpoint. The bot can stay
+        # online across Madden advances, so cached team IDs are not reliable.
+        # load_team_id_mapping() clears the cache and returns False on failure.
+        if not state.load_team_id_mapping():
+            logger.error("[FLYER] Skipping %s vs %s: live team IDs unavailable", t1, t2)
+            return
 
-        home_id = state.TEAM_NAME_TO_ID.get(t1)
-        away_id = state.TEAM_NAME_TO_ID.get(t2)
+        first_id = state.TEAM_NAME_TO_ID.get(t1)
+        second_id = state.TEAM_NAME_TO_ID.get(t2)
+        if not first_id or not second_id or first_id == second_id:
+            logger.error("[FLYER] Missing/duplicate live team IDs: %s=%s, %s=%s",
+                         t1, first_id, t2, second_id)
+            return
 
-        flyer_data = (
-            state.fetch_flyer_data(home_id, away_id)
-            if home_id and away_id
-            else None
-        )
+        # The parsed matchup order is not necessarily home/away. Flask checks
+        # the current season's exported schedule and returns the actual order.
+        flyer_data = state.fetch_flyer_data(first_id, second_id, week=week)
+        if not flyer_data:
+            logger.error("[FLYER] Skipping %s vs %s: current flyer data failed validation",
+                         t1, t2)
+            return
 
-        if flyer_data:
-            if "home" in flyer_data and "team1" not in flyer_data:
-                flyer_data["team1"] = flyer_data["home"]
-                flyer_data["team2"] = flyer_data["away"]
+        flyer_data["team1"] = flyer_data["home"]
+        flyer_data["team2"] = flyer_data["away"]
+        logger.info("[FLYER] Schedule order: home=%s (%s), away=%s (%s)",
+                    flyer_data["home"].get("name"), flyer_data["home"].get("teamId"),
+                    flyer_data["away"].get("name"), flyer_data["away"].get("teamId"))
 
-        # 🚫 Duplicate check
-        if flyer_data:
-            season = state.get_current_season(flyer_data)
-            if state.registry_has(season, week or 0, t1, t2):
-                await msg.channel.send("⚠️ Flyer already posted for this game.")
-                return
+        # Duplicate checks use canonicalized team pairs, not home/away order.
+        season = state.get_current_season(flyer_data)
+        if state.registry_has(season, week or 0, t1, t2):
+            await msg.channel.send("⚠️ Flyer already posted for this game.")
+            return
 
         # Decide AI or static
         use_ai = state.should_use_ai_flyer(week, t1, t2)
@@ -96,8 +105,6 @@ async def handle_game_stream_post(bot, msg):
                 f"💬 **Game discussion**\nPlease use {lobby.mention} for game discussion."
             )
 
-        season = state.get_current_season(flyer_data) if flyer_data else 0
-
         # Save to registry
         state.registry_put(season, week or 0, t1, t2, {
             "message_id": None,
@@ -106,5 +113,5 @@ async def handle_game_stream_post(bot, msg):
             "ts": datetime.utcnow().isoformat()
         })
 
-    except Exception as e:
-        logger.warning(f"flyer pipeline failed: {e}")
+    except Exception:
+        logger.exception("flyer pipeline failed")

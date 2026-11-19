@@ -61,7 +61,8 @@ Create a cinematic Madden NFL 27 game flyer.
 IMPORTANT:
 - Display the matchup text EXACTLY as written
 - Do NOT swap team order
-- First team is on the LEFT, second team on the RIGHT
+- VISITING team ALWAYS on the LEFT, HOME team ALWAYS on the RIGHT
+- Do not reverse home and visiting teams
 
 League branding:
 Include the official league logo at the top or center:
@@ -69,13 +70,13 @@ Include the official league logo at the top or center:
 Modern metallic badge, professional esports style.
 
 Matchup (exact order):
-{h['name']} ({h['record']}, OVR {h['ovr']})
+VISITOR (LEFT): {a['name']} ({a['record']}, OVR {a['ovr']})
 vs
-{a['name']} ({a['record']}, OVR {a['ovr']})
+HOME (RIGHT): {h['name']} ({h['record']}, OVR {h['ovr']})
 
-Star players:
-{h['name']}: {", ".join(p.get('name', 'Unknown') + " (" + p.get('pos', '?') + ")" for p in h.get('top_players', []))}
+Star players (visitor first, then home):
 {a['name']}: {", ".join(p.get('name', 'Unknown') + " (" + p.get('pos', '?') + ")" for p in a.get('top_players', []))}
+{h['name']}: {", ".join(p.get('name', 'Unknown') + " (" + p.get('pos', '?') + ")" for p in h.get('top_players', []))}
 
 Style requirements:
 - Night stadium

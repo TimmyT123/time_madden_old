@@ -1,4 +1,5 @@
-# VERSION: time_madden_old_v22.6.py
+# VERSION: time_madden_old_v22.7.py
+# v22.7: Refresh flyer team IDs per request, pass live week, and reject incomplete poster data.
 # v22.6: Load .env before importing scheduler/pregame modules.
 # v22.5: Broadcast-only 20-minute pregame previews in #game-streams.
 # v22.4: reworded the warning message
@@ -1053,21 +1054,28 @@ def load_team_id_mapping():
                 mapping[full] = str(team_id)
                 mapping[short] = str(team_id)
 
+        # Never accept a partial/empty league lookup as a valid fresh mapping.
+        if len(teams) != 32 or len({str(t.get("teamId")) for t in teams}) != 32:
+            raise ValueError(f"Expected 32 unique teams from /api/teams; got {len(teams)}")
         TEAM_NAME_TO_ID = mapping
-        logger.info(f"Loaded {len(TEAM_NAME_TO_ID)} team ID mappings")
+        logger.info("Loaded %d fresh team ID mappings", len(TEAM_NAME_TO_ID))
+        return True
 
     except Exception as e:
-        logger.error(f"Failed to load team ID mapping: {e}")
-        TEAM_NAME_TO_ID = {}
+        logger.error("Failed to refresh team ID mapping: %s", e)
+        TEAM_NAME_TO_ID = {}  # fail closed: never publish with old IDs
+        return False
 
 #--------------chatgpt flyers--------------
 
 FLYER_API_BASE = "http://127.0.0.1:5000/api/flyer/game"
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:5000/api")
 
-def fetch_flyer_data(home_id: str, away_id: str):
+def fetch_flyer_data(home_id: str, away_id: str, week: int | None = None):
     url = FLYER_API_BASE
     params = {"home": home_id, "away": away_id}
+    if week is not None:
+        params["week"] = f"week_{int(week)}"
 
     try:
         logger.info("[FLYER FETCH] Requesting %s params=%s", url, params)
@@ -1095,6 +1103,24 @@ def fetch_flyer_data(home_id: str, away_id: str):
 
         if not data.get("home") or not data.get("away"):
             logger.error("[FLYER FETCH] Home or Away data is empty.")
+            return None
+
+        # A valid HTTP response can still contain fallback names / missing values.
+        for side, expected_id in (("home", home_id), ("away", away_id)):
+            team = data.get(side)
+            if not isinstance(team, dict):
+                logger.error("[FLYER FETCH] %s is not a team object", side)
+                return None
+            if str(team.get("teamId")) != str(expected_id):
+                # Home/away reversal is legitimate, so check both IDs below instead.
+                pass
+            name = str(team.get("name") or "").strip()
+            if not name or name.startswith("Team ") or team.get("ovr") is None or not team.get("record"):
+                logger.error("[FLYER FETCH] Incomplete %s team info: %s", side, team)
+                return None
+        returned_ids = {str(data[s].get("teamId")) for s in ("home", "away")}
+        if returned_ids != {str(home_id), str(away_id)}:
+            logger.error("[FLYER FETCH] Mismatched returned teams: %s", returned_ids)
             return None
 
         logger.info("[FLYER FETCH] Flyer data validated successfully.")
@@ -2303,19 +2329,22 @@ async def on_thread_create(thread: nextcord.Thread):
     if not allowed:
         return
 
-    if not TEAM_NAME_TO_ID:
-        load_team_id_mapping()
+    # Refresh for EVERY flyer. A mapping loaded at startup may be from last season.
+    if not load_team_id_mapping():
+        logger.error("[FLYER] Skipping %s vs %s: current team IDs unavailable", t1, t2)
+        return
 
     home_id = TEAM_NAME_TO_ID.get(t1)
     away_id = TEAM_NAME_TO_ID.get(t2)
+    if not home_id or not away_id or home_id == away_id:
+        logger.error("[FLYER] Skipping: missing/duplicate team IDs for %s vs %s", t1, t2)
+        return
 
     logger.info("MATCHUP LOOKUP: %s (%s) vs %s (%s)",
                 t1, home_id, t2, away_id)
 
     flyer_data = (
-        fetch_flyer_data(home_id, away_id)
-        if home_id and away_id
-        else None
+        fetch_flyer_data(home_id, away_id, week=week)
     )
 
     if flyer_data:
@@ -2326,7 +2355,8 @@ async def on_thread_create(thread: nextcord.Thread):
     season = get_current_season(flyer_data)
 
     if not flyer_data:
-        logger.warning("Thread: flyer_data missing — using season='unknown' and skipping registry duplicate check.")
+        logger.error("[FLYER] Skipping poster: could not validate current team data for %s vs %s", t1, t2)
+        return
     else:
         if registry_has(season, week, t1, t2):
             logger.info(

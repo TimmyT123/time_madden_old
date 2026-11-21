@@ -1,4 +1,4 @@
-"""WURD official matchup scheduling v0.3 (Discord and website JSON).
+"""WURD official matchup scheduling v0.4 (Discord and website JSON).
 
 Persistent buttons, Arizona-time proposals, two-party confirmation, broadcast flags,
 20-minute reminders, matchup-specific timestamps, and atomic JSON storage. No league advances are triggered.
@@ -300,7 +300,7 @@ class ProposeModal(nextcord.ui.Modal):
         await interaction.response.send_message(
             f'✅ **Proposal saved: {local_label}** ({self.zone.key}).\n'
             '👉 **NEXT STEP:** Your opponent will receive a new message with '
-            '**Confirm Time** and **Change Time** buttons. No further action needed from you yet.',
+            '**Confirm Time**, **Change Time**, and **Broadcast** buttons. No further action needed from you yet.',
             ephemeral=True,
         )
         await _refresh(channel, rec)
@@ -311,7 +311,9 @@ class ProposeModal(nextcord.ui.Modal):
         message = (f'🚨 **KICKOFF PROPOSAL — RESPONSE NEEDED** {mention}\n'
                    '👉 **Choose a button directly below:**\n'
                    '✅ **Confirm Time** — agree to the kickoff\n'
-                   '🔄 **Change Time** — propose another kickoff\n\n'
+                   '🔄 **Change Time** — propose another kickoff\n'
+                   '📺 **Broadcast?** — choose Yes, No, or Not Sure Yet below.\n'
+                   'You may confirm kickoff even if you are undecided about broadcasting.\n\n'
                    f'**Proposed kickoff (local times):**\n{_kickoff_lines(rec, new_time)}')
         if late:
             role_name = os.getenv('GAME_CHANNEL_COMMISSIONER_ROLE_NAME', 'Commissioner')
@@ -439,6 +441,9 @@ async def _confirm_action(interaction):
         other = next(uid for uid in rec['users'] if uid != interaction.user.id)
         response = (f'✅ **Your confirmation is saved** for <t:{ts}:F>.\n'
                     f'⏳ **NEXT STEP:** Waiting for <@{other}> to confirm the proposed time.')
+    if str(interaction.user.id) not in rec.get('broadcast', {}):
+        response += ('\n📺 **Broadcast choice still needed:** use the buttons on the ' 
+                     'proposal message (or main scheduling panel). You can decide later.')
     await interaction.response.send_message(response, ephemeral=True,
                                             allowed_mentions=nextcord.AllowedMentions.none())
     await _refresh(interaction.channel, rec)
@@ -449,21 +454,73 @@ async def _confirm_action(interaction):
         if notice_id:
             try:
                 notice = await interaction.channel.fetch_message(int(notice_id))
-                await notice.edit(view=None)
+                await notice.edit(
+                    content=(f'✅ **KICKOFF CONFIRMED — BROADCAST CHOICE**\n'
+                             f'**Confirmed kickoff (local times):**\n'
+                             f'{_kickoff_lines(rec, rec["kickoff_utc"])}\n\n'
+                             '📺 **Will you broadcast?** Select below if you have not ' 
+                             'chosen yet, or update your previous choice.'),
+                    view=ProposalBroadcastView(),
+                    allowed_mentions=nextcord.AllowedMentions.none())
             except (nextcord.NotFound, nextcord.Forbidden, nextcord.HTTPException) as exc:
                 LOG.warning('[SCHEDULER] Could not clear confirmed notice: %s', exc)
 
 
 
-class ProposalNotificationView(nextcord.ui.View):
-    """Persistent actions beside the ping, not just on the matchup panel."""
+async def _set_broadcast(interaction, value, *, notice_only=False):
+    """Save a player's broadcast choice, independently from kickoff confirmation."""
+    cid = str(interaction.channel_id)
+    async with _LOCK:
+        data = _load()
+        rec = data.get(cid)
+        if not rec or not _allowed(rec, interaction.user.id):
+            await interaction.response.send_message(
+                'Only matchup participants can choose broadcasting.', ephemeral=True)
+            return
+        if notice_only and rec.get('proposal_notice_id') != interaction.message.id:
+            await interaction.response.send_message(
+                'This notice is outdated. Use the newest proposal or main scheduling panel.',
+                ephemeral=True)
+            return
+        rec.setdefault('broadcast', {})[str(interaction.user.id)] = value
+        rec.setdefault('history', []).append({
+            'at': _stamp(), 'action': 'broadcast', 'by': interaction.user.id, 'value': value})
+        _save(data)
+    await interaction.response.send_message(
+        f'📺 Broadcast preference saved: **{_stream_label(value)}**. '
+        'Your kickoff confirmation is unchanged.', ephemeral=True)
+    await _refresh(interaction.channel, rec)
+
+
+class ProposalBroadcastView(nextcord.ui.View):
+    """Persistent broadcast choices beside a proposal, including after confirmation."""
     def __init__(self):
         super().__init__(timeout=None)
 
+    @nextcord.ui.button(label='📺 I Will Broadcast', style=nextcord.ButtonStyle.success,
+                        custom_id='wurd:schedule:notice-yes:v1', row=1)
+    async def yes(self, button, interaction):
+        await _set_broadcast(interaction, True, notice_only=True)
+
+    @nextcord.ui.button(label='🚫 Not Broadcasting', style=nextcord.ButtonStyle.danger,
+                        custom_id='wurd:schedule:notice-no:v1', row=1)
+    async def no(self, button, interaction):
+        await _set_broadcast(interaction, False, notice_only=True)
+
+    @nextcord.ui.button(label='❔ Not Sure Yet', style=nextcord.ButtonStyle.secondary,
+                        custom_id='wurd:schedule:notice-unsure:v1', row=1)
+    async def unsure(self, button, interaction):
+        await _set_broadcast(interaction, None, notice_only=True)
+
+
+class ProposalNotificationView(ProposalBroadcastView):
+    """Kickoff and broadcast actions all beside the opponent's proposal ping."""
+    def __init__(self):
+        super().__init__()
+
     @nextcord.ui.button(label='Confirm Time', style=nextcord.ButtonStyle.success,
-                        custom_id='wurd:schedule:notice-confirm:v1')
+                        custom_id='wurd:schedule:notice-confirm:v1', row=0)
     async def confirm(self, button, interaction):
-        # An older notification must not confirm a different/newer proposal.
         rec = _load().get(str(interaction.channel_id))
         if not rec or rec.get('proposal_notice_id') != interaction.message.id:
             await interaction.response.send_message(
@@ -472,7 +529,7 @@ class ProposalNotificationView(nextcord.ui.View):
         await _confirm_action(interaction)
 
     @nextcord.ui.button(label='Change Time', style=nextcord.ButtonStyle.primary,
-                        custom_id='wurd:schedule:notice-change:v1')
+                        custom_id='wurd:schedule:notice-change:v1', row=0)
     async def change(self, button, interaction):
         rec = _load().get(str(interaction.channel_id))
         if not rec or rec.get('proposal_notice_id') != interaction.message.id:
@@ -523,18 +580,7 @@ class SchedulingView(nextcord.ui.View):
         await interaction.channel.send(f'✅ Commissioner <@{interaction.user.id}> approved an extension for this scheduled kickoff. **The league advance time itself has not changed.**',allowed_mentions=nextcord.AllowedMentions.none())
 
     async def _broadcast(self, interaction, value):
-        cid = str(interaction.channel_id)
-        async with _LOCK:
-            data = _load()
-            rec = data.get(cid)
-            if not rec or not _allowed(rec, interaction.user.id):
-                await interaction.response.send_message('Only matchup participants can choose broadcasting.', ephemeral=True)
-                return
-            rec.setdefault('broadcast', {})[str(interaction.user.id)] = value
-            rec.setdefault('history', []).append({'at': _stamp(), 'action': 'broadcast', 'by': interaction.user.id, 'value': value})
-            _save(data)
-        await interaction.response.send_message('Broadcast preference saved.', ephemeral=True)
-        await _refresh(interaction.channel, rec)
+        await _set_broadcast(interaction, value)
 
     @nextcord.ui.button(label='📺 I Will Broadcast', style=nextcord.ButtonStyle.success, custom_id='wurd:schedule:yes:v1', row=1)
     async def yes(self, button, interaction):
@@ -557,6 +603,7 @@ def setup(bot, advance_reader=None, ap_check=None):
     _AP_CHECK = ap_check
     bot.add_view(SchedulingView())
     bot.add_view(ProposalNotificationView())
+    bot.add_view(ProposalBroadcastView())
 
 
 async def create_panel(channel, member_ids, matchup, league_id=None, season=None, week=None):
